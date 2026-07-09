@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 0.3.3
+
+### Patch Changes
+
+- [`09e6051`](https://github.com/Medico-Mind/rolldown-compression/commit/09e60515347263107017b720300bbddba7d6fa3f) Thanks [@Mnwa](https://github.com/Mnwa)! - Inject optional deps on a release time
+
 ## 0.3.2
 
 ### Patch Changes
