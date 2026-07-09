@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.changesets.outputs.published }}
+      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,14 +46,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Dispatches release.yml on the freshly pushed release tag instead of
+  # calling it as a reusable workflow: npm Trusted Publishing validates the
+  # top-level workflow's filename, so release.yml must be the entry point of
+  # every publishing run. workflow_dispatch is exempt from GitHub's
+  # GITHUB_TOKEN recursion prevention, so the plain job token suffices.
   release:
-    name: Release
+    name: Trigger release
     needs: changesets
     if: needs.changesets.outputs.published == 'true'
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-      id-token: write
-    uses: ./.github/workflows/release.yml
-    with:
-      publish: true
-    secrets: inherit
+      actions: write
+    steps:
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHED_PACKAGES: ${{ needs.changesets.outputs.publishedPackages }}
+        run: |
+          VERSION="$(jq -r '.[] | select(.name == "@medicomind/rolldown-compression") | .version' <<< "$PUBLISHED_PACKAGES")"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine published version from: $PUBLISHED_PACKAGES"
+            exit 1
+          fi
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" \
+            --ref "@medicomind/rolldown-compression@${VERSION}" \
+            -f publish=true

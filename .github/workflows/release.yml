@@ -1,11 +1,14 @@
 name: Release
 
 # Invoked in one of three ways:
-# - workflow_call from version.yml after the changesets release PR is merged
-#   (publish: true) — builds all platform binaries and publishes to npm;
-# - workflow_dispatch — dry-run by default: builds all artifacts, publishes
-#   nothing; set publish=true to re-run a failed publish (already-published
-#   packages are skipped, so this is safe to repeat);
+# - workflow_dispatch from version.yml after the changesets release PR is
+#   merged (publish: true) — builds all platform binaries and publishes to
+#   npm. Dispatch (not workflow_call) because npm Trusted Publishing
+#   validates the top-level workflow's filename, so release.yml must be the
+#   entry point of every publishing run;
+# - manual workflow_dispatch — dry-run by default: builds all artifacts,
+#   publishes nothing; set publish=true to re-run a failed publish
+#   (already-published packages are skipped, so this is safe to repeat);
 # - push of a release tag (manual escape hatch, e.g. re-running a failed
 #   publish for an already-tagged version).
 on:
@@ -14,12 +17,6 @@ on:
       - 'v*'
       - '@medicomind/rolldown-compression@*'
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish the built artifacts to npm
-        type: boolean
-        default: false
-  workflow_call:
     inputs:
       publish:
         description: Publish the built artifacts to npm
@@ -107,11 +104,15 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+      # No registry-url / auth token: publishing authenticates via npm
+      # Trusted Publishing (OIDC, needs the id-token: write permission and
+      # npm CLI >= 11.5.1, bundled with Node 26). Provenance is generated
+      # automatically. Each package (root + npm/*) must have this repo's
+      # release.yml configured as its trusted publisher on npmjs.com.
       - uses: actions/setup-node@v4
         with:
           node-version: 26
           cache: npm
-          registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build:ts
       - uses: actions/download-artifact@v4
@@ -123,15 +124,14 @@ jobs:
         run: ls -R npm
       # Publishes every platform package plus the root package, one by one.
       # Idempotent (already-published versions are skipped) and retried,
-      # because GitHub's OIDC endpoint used for provenance intermittently
-      # fails with IDENTITY_TOKEN_READ_ERROR when several packages are
-      # published in quick succession. --ignore-scripts keeps the root
-      # package's prepublishOnly (napi prepublish) from re-publishing the
-      # platform packages a second time.
+      # because GitHub's OIDC endpoint intermittently fails with
+      # IDENTITY_TOKEN_READ_ERROR when several packages are published in
+      # quick succession. --ignore-scripts keeps the root package's
+      # prepublishOnly (napi prepublish) from re-publishing the platform
+      # packages a second time.
       - name: Publish to npm
         if: ${{ inputs.publish == true || startsWith(github.ref, 'refs/tags/') }}
         run: |
-          npm config set provenance true
           for dir in npm/* .; do
             name="$(node -p "require('./${dir}/package.json').name")"
             version="$(node -p "require('./${dir}/package.json').version")"
@@ -151,8 +151,6 @@ jobs:
             echo "::error::Failed to publish ${name}@${version} after 3 attempts"
             exit 1
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub release
         if: ${{ inputs.publish == true || startsWith(github.ref, 'refs/tags/') }}
         run: |
