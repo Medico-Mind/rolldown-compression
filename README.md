@@ -7,6 +7,7 @@
 [![license](https://img.shields.io/npm/l/%40medicomind%2Frolldown-compression)](./LICENSE)
 
 Fast, native compression plugin for [Rolldown](https://rolldown.rs): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
+
 Since v0.3.3 we are using PGO and Bolt optimizations in our native binaries. It reduce around 5-10% build compression time in some cases (see benchmarks).
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
