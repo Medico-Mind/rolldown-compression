@@ -140,7 +140,9 @@ jobs:
               continue
             fi
             for attempt in 1 2 3; do
-              if npm publish "${dir}" --access public --ignore-scripts; then
+              # ./ prefix keeps npm from parsing npm/darwin-arm64 as a
+              # github owner/repo spec
+              if npm publish "./${dir}" --access public --ignore-scripts; then
                 continue 2
               fi
               echo "::warning::Publishing ${name}@${version} failed (attempt ${attempt}/3)"
