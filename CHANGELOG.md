@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 0.3.1
+
+### Patch Changes
+
+- [`88eee52`](https://github.com/Medico-Mind/rolldown-compression/commit/88eee5253615078ea71f58cebf6d27b412756049) Thanks [@Mnwa](https://github.com/Mnwa)! - Install llvm to wf
+
 ## 0.3.0
 
 ### Minor Changes
