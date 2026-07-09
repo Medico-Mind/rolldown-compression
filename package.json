@@ -1,6 +1,6 @@
 {
   "name": "@medicomind/rolldown-compression",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Fast native (Rust) gzip / brotli / zstd compression plugin for Rolldown, powered by napi-rs",
   "keywords": [
     "rolldown",
@@ -83,12 +83,12 @@
     "rolldown": "^1.0.0"
   },
   "optionalDependencies": {
-    "@medicomind/rolldown-compression-darwin-arm64": "0.3.1",
-    "@medicomind/rolldown-compression-darwin-x64": "0.3.1",
-    "@medicomind/rolldown-compression-linux-arm64-gnu": "0.3.1",
-    "@medicomind/rolldown-compression-linux-x64-gnu": "0.3.1",
-    "@medicomind/rolldown-compression-linux-x64-musl": "0.3.1",
-    "@medicomind/rolldown-compression-win32-x64-msvc": "0.3.1"
+    "@medicomind/rolldown-compression-darwin-arm64": "0.3.2",
+    "@medicomind/rolldown-compression-darwin-x64": "0.3.2",
+    "@medicomind/rolldown-compression-linux-arm64-gnu": "0.3.2",
+    "@medicomind/rolldown-compression-linux-x64-gnu": "0.3.2",
+    "@medicomind/rolldown-compression-linux-x64-musl": "0.3.2",
+    "@medicomind/rolldown-compression-win32-x64-msvc": "0.3.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
