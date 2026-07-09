@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 0.3.2
+
+### Patch Changes
+
+- [`1def850`](https://github.com/Medico-Mind/rolldown-compression/commit/1def8503a2ffd8fc06c3a8bf394fad7e256734a5) Thanks [@Mnwa](https://github.com/Mnwa)! - Declare the platform binary packages in `optionalDependencies` so npm actually installs the native binding. 0.3.1 shipped without them, causing "Cannot find native binding" on import.
+
 ## 0.3.1
 
 ### Patch Changes
