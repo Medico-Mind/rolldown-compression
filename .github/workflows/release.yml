@@ -159,13 +159,15 @@ jobs:
         run: npx napi artifacts --output-dir artifacts
       - name: List packages
         run: ls -R npm
-      # The root package must declare every npm/* platform package in
-      # optionalDependencies at the version being published — publishing runs
-      # with --ignore-scripts, so `napi prepublish` never writes them (0.3.1
-      # shipped without any and the native binding was never installed).
-      # version-packages keeps them in sync; this guard catches drift.
-      - name: Verify optionalDependencies match platform packages
-        run: node scripts/sync-optional-deps.mjs --check
+      # The published root package must declare every npm/* platform package
+      # in optionalDependencies — publishing runs with --ignore-scripts, so
+      # `napi prepublish` never writes them (0.3.1 shipped without any and
+      # the native binding was never installed). They are injected here, at
+      # publish time only: checked into package.json they would break every
+      # `npm ci` after a version bump, because the new version's platform
+      # packages aren't on the registry yet when the lockfile is refreshed.
+      - name: Inject optionalDependencies (platform packages)
+        run: node scripts/sync-optional-deps.mjs
       # Publishes every platform package plus the root package, one by one.
       # Idempotent (already-published versions are skipped) and retried,
       # because GitHub's OIDC endpoint intermittently fails with

@@ -26,8 +26,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run lint
-      # Root optionalDependencies must pin every npm/* platform package at
-      # the root version (see scripts/sync-optional-deps.mjs).
+      # optionalDependencies must NOT be checked in — they are injected at
+      # publish time (see scripts/sync-optional-deps.mjs for why).
       - run: node scripts/sync-optional-deps.mjs --check
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
