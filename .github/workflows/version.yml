@@ -37,7 +37,11 @@ jobs:
         uses: changesets/action@v1
         with:
           version: npm run version-packages
-          publish: npx changeset tag
+          # npm script (not bare `changeset tag`): the action execs the publish
+          # command without a shell, and its own tag push has proven unreliable
+          # (v0.3.0's tag never reached the remote, breaking the release
+          # dispatch with "No ref found"), so the script pushes explicitly.
+          publish: npm run tag-release
           commit: 'chore: release'
           title: 'chore: release'
           # The GitHub release (with changelog notes) is created by the

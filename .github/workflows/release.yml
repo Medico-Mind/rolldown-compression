@@ -95,6 +95,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.settings.target }}
+          # llvm-profdata for merging PGO profiles (scripts/pgo/build.mjs)
+          components: llvm-tools
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.settings.target }}

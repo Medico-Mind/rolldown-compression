@@ -69,6 +69,7 @@
     "format": "biome check --write .",
     "lint": "biome check .",
     "prepublishOnly": "napi prepublish -t npm",
+    "tag-release": "changeset tag && git push origin --tags",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
