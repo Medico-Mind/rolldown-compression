@@ -42,8 +42,10 @@ jobs:
         # cross-compiled targets train through an emulation layer:
         # - x86_64-apple-darwin: x64 Node under Rosetta 2 (nodeArch: x64);
         # - aarch64-unknown-linux-gnu: arm64 Node container under QEMU;
-        # - x86_64-unknown-linux-musl: Alpine Node container;
-        # docker --train commands mount the workspace at its host path so the
+        # - x86_64-unknown-linux-musl: entire PGO pipeline runs natively in
+        #   the napi-rs Alpine container (zig cc can't link instrumented
+        #   builds: it rejects rustc's `-u __llvm_profile_runtime` flag);
+        # docker commands mount the workspace at its host path so the
         # binding path and LLVM_PROFILE_FILE resolve unchanged inside.
         settings:
           - host: macos-latest
@@ -70,13 +72,16 @@ jobs:
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
               --napi-args="--target aarch64-unknown-linux-gnu --use-napi-cross"
               --train="docker run --rm --platform linux/arm64 -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-slim node scripts/pgo/train.mjs {binding}"
-          # musl cross-compiles with zig (-x).
+          # musl builds (and trains) natively inside the napi-rs Alpine
+          # container, so no --train override is needed.
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             build: >-
+              docker run --rm -v $PWD:$PWD -w $PWD -e CARGO_TERM_COLOR
+              ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
+              sh -c 'rustup component add llvm-tools &&
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
-              --napi-args="--target x86_64-unknown-linux-musl -x"
-              --train="docker run --rm -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-alpine node scripts/pgo/train.mjs {binding}"
+              --napi-args="--target x86_64-unknown-linux-musl"'
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             build: >-
@@ -92,12 +97,17 @@ jobs:
           # x64 Node on the arm64 macOS runner (Rosetta 2) so the training run
           # can load the cross-compiled x86_64-apple-darwin binding.
           architecture: ${{ matrix.settings.nodeArch || '' }}
+      # musl needs no host Rust: it builds inside the Alpine container, which
+      # would also leave root-owned files in target/ that break the cache
+      # post step.
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !contains(matrix.settings.target, 'musl') }}
         with:
           targets: ${{ matrix.settings.target }}
           # llvm-profdata for merging PGO profiles (scripts/pgo/build.mjs)
           components: llvm-tools
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !contains(matrix.settings.target, 'musl') }}
         with:
           key: ${{ matrix.settings.target }}
       - name: Cache napi-rs cross toolchain
@@ -111,17 +121,6 @@ jobs:
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
-      - uses: mlugg/setup-zig@v2
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        with:
-          version: latest
-      - name: Install cargo-zigbuild
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        uses: taiki-e/install-action@v2
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          tool: cargo-zigbuild
       - run: npm ci
       - name: Build (PGO)
         run: ${{ matrix.settings.build }}
