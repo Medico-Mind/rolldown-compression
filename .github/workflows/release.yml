@@ -39,18 +39,18 @@ jobs:
           - host: macos-latest
             target: x86_64-apple-darwin
             build: npm run build:native -- --target x86_64-apple-darwin
+          # linux gnu targets cross-compile with the napi-rs toolchain
+          # (@napi-rs/cross-toolchain, cached under ~/.napi-rs).
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            build: npm run build:native -- --target x86_64-unknown-linux-gnu
+            build: npm run build:native -- --target x86_64-unknown-linux-gnu --use-napi-cross
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
-            build: npm run build:native -- --target aarch64-unknown-linux-gnu
+            build: npm run build:native -- --target aarch64-unknown-linux-gnu --use-napi-cross
+          # musl cross-compiles with zig (-x).
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            build: npm run build:native -- --target x86_64-unknown-linux-musl
+            build: npm run build:native -- --target x86_64-unknown-linux-musl -x
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             build: npm run build:native -- --target x86_64-pc-windows-msvc
@@ -58,27 +58,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        if: ${{ !matrix.settings.docker }}
         with:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
-        if: ${{ !matrix.settings.docker }}
         with:
           targets: ${{ matrix.settings.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.settings.target }}
-      - run: npm ci
-      - name: Build in docker
-        uses: addnab/docker-run-action@v3
-        if: ${{ matrix.settings.docker }}
+      - name: Cache napi-rs cross toolchain
+        if: ${{ contains(matrix.settings.build, '--use-napi-cross') }}
+        uses: actions/cache@v4
         with:
-          image: ${{ matrix.settings.docker }}
-          options: --user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build
-          run: ${{ matrix.settings.build }}
+          path: ~/.napi-rs
+          key: napi-cross-${{ matrix.settings.target }}
+      - uses: mlugg/setup-zig@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        uses: taiki-e/install-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tool: cargo-zigbuild
+      - run: npm ci
       - name: Build
-        if: ${{ !matrix.settings.docker }}
         run: ${{ matrix.settings.build }}
         shell: bash
       - uses: actions/upload-artifact@v4
