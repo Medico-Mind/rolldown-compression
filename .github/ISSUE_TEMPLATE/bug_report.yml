@@ -1,0 +1,73 @@
+name: Bug report
+description: Something broken, wrong output, or a crash
+title: 'bug: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please check
+        [existing issues](https://github.com/Medico-Mind/rolldown-compression/issues)
+        first to avoid duplicates.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug — what you expected and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: >
+        Minimal steps or a repository/StackBlitz link that reproduces the issue.
+        Include your plugin configuration (the `compression({ ... })` call) and
+        relevant parts of `rolldown.config.ts`.
+      placeholder: |
+        1. Configure the plugin with `compression({ ... })`
+        2. Run `rolldown build`
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Full error message and stack trace, if any. This is rendered as code automatically.
+      render: shell
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: '@medicomind/rolldown-compression@0.1.0'
+    validations:
+      required: true
+  - type: input
+    id: rolldown-version
+    attributes:
+      label: Rolldown version
+      placeholder: rolldown@1.1.5
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      placeholder: v26.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64 (aarch64-apple-darwin)
+        - macOS x64 (x86_64-apple-darwin)
+        - Linux x64 glibc (x86_64-unknown-linux-gnu)
+        - Linux arm64 glibc (aarch64-unknown-linux-gnu)
+        - Linux x64 musl (x86_64-unknown-linux-musl)
+        - Windows x64 (x86_64-pc-windows-msvc)
+        - Other / unsupported platform
+    validations:
+      required: true

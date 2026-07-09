@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Rolldown bug (not plugin-specific)
+    url: https://github.com/rolldown/rolldown/issues
+    about: If the problem reproduces without this plugin, report it to Rolldown directly.

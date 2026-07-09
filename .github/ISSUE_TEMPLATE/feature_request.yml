@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a new option, algorithm, or improvement
+title: 'feat: '
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Note the plugin's scope: compression runs in Rust, so custom JS
+        algorithms can't cross the FFI boundary (see
+        [differences from vite-plugin-compression2](https://github.com/Medico-Mind/rolldown-compression#differences-from-vite-plugin-compression2)).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve? Why do the existing options not cover it?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen? Sketch the API if you have one in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried or other designs that could solve this.

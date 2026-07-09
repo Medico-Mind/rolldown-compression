@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+[![CI](https://github.com/Medico-Mind/rolldown-compression/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Medico-Mind/rolldown-compression/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/%40medicomind%2Frolldown-compression?logo=npm)](https://www.npmjs.com/package/@medicomind/rolldown-compression)
+[![npm downloads](https://img.shields.io/npm/dm/%40medicomind%2Frolldown-compression)](https://www.npmjs.com/package/@medicomind/rolldown-compression)
+[![node](https://img.shields.io/node/v/%40medicomind%2Frolldown-compression)](https://www.npmjs.com/package/@medicomind/rolldown-compression)
+[![license](https://img.shields.io/npm/l/%40medicomind%2Frolldown-compression)](./LICENSE)
+
 Fast, native compression plugin for [Rolldown](https://rolldown.rs): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
@@ -170,6 +176,8 @@ Node.js >= 18.
 - **Publishing**: public npm (`--access public`), versioned with [changesets](https://github.com/changesets/changesets). PRs include a changeset (`npx changeset`); the Version workflow keeps a `chore: release` PR up to date, and merging it tags the release and runs the full napi build matrix before `napi prepublish` + `npm publish`. Run the Release workflow via `workflow_dispatch` for a dry-run that builds all platform artifacts without publishing.
 
 ## Development
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contributor guide (setup, tests, changesets, PR workflow).
 
 ```sh
 npm install          # install JS deps
