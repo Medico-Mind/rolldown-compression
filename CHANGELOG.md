@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 0.3.0
+
+### Minor Changes
+
+- [`0d0ef1a`](https://github.com/Medico-Mind/rolldown-compression/commit/0d0ef1a19e16394253a73c059e04e9f13df94f3d) Thanks [@Mnwa](https://github.com/Mnwa)! - Add a PGO and Bolt optimizations
+
 ## 0.2.0
 
 ### Minor Changes
