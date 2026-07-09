@@ -36,28 +36,52 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every target builds with PGO (scripts/pgo/build.mjs): instrumented
+        # build -> training run -> llvm-profdata merge -> optimized rebuild.
+        # The instrumented binding has to execute to produce profiles, so
+        # cross-compiled targets train through an emulation layer:
+        # - x86_64-apple-darwin: x64 Node under Rosetta 2 (nodeArch: x64);
+        # - aarch64-unknown-linux-gnu: arm64 Node container under QEMU;
+        # - x86_64-unknown-linux-musl: Alpine Node container;
+        # docker --train commands mount the workspace at its host path so the
+        # binding path and LLVM_PROFILE_FILE resolve unchanged inside.
         settings:
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: npm run build:native -- --target aarch64-apple-darwin
+            build: >-
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              --napi-args="--target aarch64-apple-darwin"
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: npm run build:native -- --target x86_64-apple-darwin
+            nodeArch: x64
+            build: >-
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              --napi-args="--target x86_64-apple-darwin"
           # linux gnu targets cross-compile with the napi-rs toolchain
           # (@napi-rs/cross-toolchain, cached under ~/.napi-rs).
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            build: npm run build:native -- --target x86_64-unknown-linux-gnu --use-napi-cross
+            build: >-
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              --napi-args="--target x86_64-unknown-linux-gnu --use-napi-cross"
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            build: npm run build:native -- --target aarch64-unknown-linux-gnu --use-napi-cross
+            build: >-
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              --napi-args="--target aarch64-unknown-linux-gnu --use-napi-cross"
+              --train="docker run --rm --platform linux/arm64 -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-slim node scripts/pgo/train.mjs {binding}"
           # musl cross-compiles with zig (-x).
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            build: npm run build:native -- --target x86_64-unknown-linux-musl -x
+            build: >-
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              --napi-args="--target x86_64-unknown-linux-musl -x"
+              --train="docker run --rm -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-alpine node scripts/pgo/train.mjs {binding}"
           - host: windows-latest
             target: x86_64-pc-windows-msvc
-            build: npm run build:native -- --target x86_64-pc-windows-msvc
+            build: >-
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              --napi-args="--target x86_64-pc-windows-msvc"
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +89,9 @@ jobs:
         with:
           node-version: 26
           cache: npm
+          # x64 Node on the arm64 macOS runner (Rosetta 2) so the training run
+          # can load the cross-compiled x86_64-apple-darwin binding.
+          architecture: ${{ matrix.settings.nodeArch || '' }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.settings.target }}
@@ -77,6 +104,11 @@ jobs:
         with:
           path: ~/.napi-rs
           key: napi-cross-${{ matrix.settings.target }}
+      - name: Set up QEMU (arm64 PGO training container)
+        if: ${{ contains(matrix.settings.build, 'linux/arm64') }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.settings.target, 'musl') }}
         with:
@@ -89,7 +121,7 @@ jobs:
         with:
           tool: cargo-zigbuild
       - run: npm ci
-      - name: Build
+      - name: Build (PGO)
         run: ${{ matrix.settings.build }}
         shell: bash
       - uses: actions/upload-artifact@v4

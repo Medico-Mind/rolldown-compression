@@ -145,6 +145,28 @@ Reading these numbers honestly:
 - **brotli at quality 11** is the bound on the combined number: the Rust `brotli` crate is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the achievable speedup is roughly `cores / UV_THREADPOOL_SIZE` — ~2x on 8 equal cores, more on bigger machines. No implementation can honestly do better without changing the algorithm or its level.
 - The speedup grows with core count and shrinks if you raise `UV_THREADPOOL_SIZE` for the JS side — the benchmark prints both so runs are comparable.
 
+### PGO / BOLT builds
+
+`npm run build:pgo` (scripts/pgo/build.mjs) produces a profile-guided release build:
+
+1. baseline release build → `target/pgo/baseline.node`
+2. instrumented build (`-Cprofile-generate`)
+3. training run over a static corpus (`scripts/pgo/corpus.mjs`: JS bundles, JSON, CSS, HTML, source maps, base64 blobs, incompressible noise — every algorithm at fast/default/max levels)
+4. `llvm-profdata merge` (uses the rustup `llvm-tools` component; `rustup component add llvm-tools` if missing)
+5. optimized rebuild (`-Cprofile-use`) → `target/pgo/pgo.node`, also installed as the platform binding in the repo root
+6. on Linux ELF targets with `llvm-bolt`/`merge-fdata` on PATH, a BOLT post-link pass (instrument → retrain → `-reorder-blocks=ext-tsp` layout optimization) → `target/pgo/bolt.node`. BOLT does not support Mach-O/PE, so this step is skipped on macOS and Windows.
+
+`npm run bench:pgo` (or with `--quick`) then benchmarks baseline vs PGO(+BOLT) on the same dist-shaped fixtures as `npm run bench`, with interleaved iterations and median timings:
+
+| scenario | what it measures |
+| --- | --- |
+| baseline | plain `--release` (fat LTO, `codegen-units = 1`) |
+| pgo / pgo+bolt | same flags plus `-Cprofile-use` (and BOLT layout on Linux) |
+
+Expect modest gains: the baseline already ships fat LTO with `codegen-units = 1`, so PGO adds a few percent on the compression-heavy scenarios (~1.1x on the combined gzip+brotli run on an M1 Pro) and is within noise on sub-second ones. Sub-second scenario deltas in the table are measurement noise, not regressions.
+
+The release workflow builds every published binary with PGO. Cross-compiled targets run the training workload through an emulation layer — x64 Node under Rosetta 2 for `x86_64-apple-darwin`, an arm64 Node container under QEMU for `aarch64-unknown-linux-gnu`, and an Alpine container for musl — so each target trains on its own instrumented binding.
+
 ## Platform support
 
 Prebuilt binaries are published for:

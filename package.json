@@ -59,10 +59,12 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "bench": "node benchmark/index.mjs",
+    "bench:pgo": "node benchmark/pgo-compare.mjs",
     "changeset": "changeset",
     "build": "napi build --platform --release && npm run build:ts",
     "build:debug": "napi build --platform && npm run build:ts",
     "build:native": "napi build --platform --release",
+    "build:pgo": "node scripts/pgo/build.mjs",
     "build:ts": "tsdown",
     "format": "biome check --write .",
     "lint": "biome check .",
