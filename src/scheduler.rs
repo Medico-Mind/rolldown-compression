@@ -144,7 +144,7 @@ mod tests {
             .into_bytes()
     }
 
-    fn make_items<'a>(inputs: &'a [Vec<u8>]) -> Vec<BatchItem<'a>> {
+    fn make_items(inputs: &[Vec<u8>]) -> Vec<BatchItem<'_>> {
         let algorithms = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
         inputs
             .iter()
