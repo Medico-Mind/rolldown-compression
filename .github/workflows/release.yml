@@ -43,8 +43,8 @@ jobs:
         # - x86_64-apple-darwin: x64 Node under Rosetta 2 (nodeArch: x64);
         # - aarch64-unknown-linux-gnu: arm64 Node container under QEMU;
         # - x86_64-unknown-linux-musl: entire PGO pipeline runs natively in
-        #   the napi-rs Alpine container (zig cc can't link instrumented
-        #   builds: it rejects rustc's `-u __llvm_profile_runtime` flag);
+        #   an Alpine container (zig cc can't link instrumented builds: it
+        #   rejects rustc's `-u __llvm_profile_runtime` flag);
         # docker commands mount the workspace at its host path so the
         # binding path and LLVM_PROFILE_FILE resolve unchanged inside.
         settings:
@@ -72,14 +72,18 @@ jobs:
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
               --napi-args="--target aarch64-unknown-linux-gnu --use-napi-cross"
               --train="docker run --rm --platform linux/arm64 -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-slim node scripts/pgo/train.mjs {binding}"
-          # musl builds (and trains) natively inside the napi-rs Alpine
-          # container, so no --train override is needed.
+          # musl builds (and trains) natively inside an Alpine container, so
+          # no --train override is needed. rust:alpine + apk nodejs rather
+          # than the napi-rs image, whose lts-alpine tag lags on Node 18
+          # (too old for @napi-rs/cli). build-base provides the C toolchain
+          # for zstd-sys, llvm-tools provides llvm-profdata.
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             build: >-
               docker run --rm -v $PWD:$PWD -w $PWD -e CARGO_TERM_COLOR
-              ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-              sh -c 'rustup component add llvm-tools &&
+              rust:alpine
+              sh -c 'apk add --no-cache nodejs npm build-base &&
+              rustup component add llvm-tools &&
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
               --napi-args="--target x86_64-unknown-linux-musl"'
           - host: windows-latest
