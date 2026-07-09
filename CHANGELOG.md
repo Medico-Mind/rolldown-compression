@@ -1,5 +1,17 @@
 # @medicomind/rolldown-compression
 
+## 0.2.0
+
+### Minor Changes
+
+- [`8c73f0c`](https://github.com/Medico-Mind/rolldown-compression/commit/8c73f0c725501fcf69ebbe3ea9a2d5264437d089) Thanks [@Mnwa](https://github.com/Mnwa)! - Update dependencies: TypeScript 7 toolchain, @types/node 26, zlib-rs 0.6.6.
+
+### Patch Changes
+
+- [`798219c`](https://github.com/Medico-Mind/rolldown-compression/commit/798219c059dc6c514912bbaea3844e3c0d09b447) Thanks [@Mnwa](https://github.com/Mnwa)! - Elide lifetimes
+
+- [`996537c`](https://github.com/Medico-Mind/rolldown-compression/commit/996537c2948681e323aa0d67fdc077e5e2887df2) Thanks [@Mnwa](https://github.com/Mnwa)! - rollback ts to 7
+
 ## 0.1.0
 
 ### Minor Changes
