@@ -7,6 +7,7 @@
 [![license](https://img.shields.io/npm/l/%40medicomind%2Frolldown-compression)](./LICENSE)
 
 Fast, native compression plugin for [Rolldown](https://rolldown.rs): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
+Since v0.3.3 we are using PGO and Bolt optimizations in our native binaries. It reduce around 5-10% build compression time in some cases (see benchmarks).
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
 
@@ -131,13 +132,25 @@ example.com {
 
 Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 
-| scenario | output | native (rust) | node:zlib | speedup |
-| --- | --- | --- | --- | --- |
-| gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 8.82s | 15.19s | **1.72x** |
-| gzip (level 9) | 5.51 MB | 0.10s | 0.33s | **3.48x** |
-| gzip (level 6) | 5.64 MB | 0.07s | 0.16s | **2.38x** |
-| brotli (quality 11) | 3.21 MB | 8.16s | 14.96s | **1.83x** |
-| zstd (level 19) | 3.28 MB | 2.19s | 6.91s | **3.15x** |
+### With PGO
+| scenario                          | output  | native (rust) | node:zlib | speedup |
+|-----------------------------------|---------|---------------|-----------|---------|
+| gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 10.90s        | 15.55s    | 1.43x   |
+| gzip (level 9)                    | 5.51 MB | 0.09s         | 0.33s     | 3.61x   |
+| gzip (level 6)                    | 5.64 MB | 0.06s         | 0.16s     | 2.60x   |
+| brotli (quality 11)               | 3.21 MB | 9.74s         | 14.98s    | 1.54x   |
+| brotli (quality 6)                | 5.70 MB | 0.13s         | 0.16s     | 1.29x   |
+| zstd (level 19)                   | 3.28 MB | 2.32s         | 6.83s     | 2.94x   |
+
+### Without PGO
+| scenario                          | output  | native (rust) | node:zlib | speedup |
+|-----------------------------------|---------|---------------|-----------|---------|
+| gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 10.41s        | 15.36s    | 1.48x   |
+| gzip (level 9)                    | 5.51 MB | 0.10s         | 0.34s     | 3.38x   |
+| gzip (level 6)                    | 5.64 MB | 0.07s         | 0.16s     | 2.17x   |
+| brotli (quality 11)               | 3.21 MB | 10.31s        | 15.00s    | 1.45x   |
+| brotli (quality 6)                | 5.70 MB | 0.13s         | 0.17s     | 1.28x   |
+| zstd (level 19)                   | 3.28 MB | 2.97s         | 6.95s     | 2.34x   |
 
 Reading these numbers honestly:
 
