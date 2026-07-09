@@ -74,13 +74,21 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "universalize": "napi universalize",
-    "version-packages": "changeset version && napi version && npm install --package-lock-only"
+    "version-packages": "changeset version && napi version && node scripts/sync-optional-deps.mjs && npm install --package-lock-only"
   },
   "dependencies": {
     "@rollup/pluginutils": "^5.4.0"
   },
   "peerDependencies": {
     "rolldown": "^1.0.0"
+  },
+  "optionalDependencies": {
+    "@medicomind/rolldown-compression-darwin-arm64": "0.3.1",
+    "@medicomind/rolldown-compression-darwin-x64": "0.3.1",
+    "@medicomind/rolldown-compression-linux-arm64-gnu": "0.3.1",
+    "@medicomind/rolldown-compression-linux-x64-gnu": "0.3.1",
+    "@medicomind/rolldown-compression-linux-x64-musl": "0.3.1",
+    "@medicomind/rolldown-compression-win32-x64-msvc": "0.3.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",

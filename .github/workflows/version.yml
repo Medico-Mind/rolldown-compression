@@ -4,7 +4,9 @@ name: Version
 # 1. PRs land on main carrying .changeset/*.md files.
 # 2. The changesets action keeps a "chore: release" PR up to date (runs
 #    `npm run version-packages`: bumps package.json + npm/* platform packages,
-#    rewrites CHANGELOG.md, refreshes the lockfile).
+#    re-pins the root optionalDependencies to the new version
+#    (scripts/sync-optional-deps.mjs), rewrites CHANGELOG.md, refreshes the
+#    lockfile).
 # 3. Merging that PR re-runs this workflow with no pending changesets; the
 #    action then runs `changeset tag`, pushes the release tag, and the release
 #    workflow is invoked to build all platform binaries and publish to npm.
