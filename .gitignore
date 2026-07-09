@@ -1,0 +1,20 @@
+# Rust
+/target
+
+# Node
+node_modules/
+dist/
+coverage/
+*.node
+npm/**/*.node
+
+# Benchmark fixtures (generated)
+benchmark/.fixtures/
+
+# IDE / tooling
+.idea/
+.vscode/
+.ide
+.claude
+*.log
+.DS_Store

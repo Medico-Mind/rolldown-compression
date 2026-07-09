@@ -1,0 +1,36 @@
+{
+  "name": "@medicomind/rolldown-compression-darwin-x64",
+  "version": "0.0.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "rolldown-compression.darwin-x64.node",
+  "files": [
+    "rolldown-compression.darwin-x64.node"
+  ],
+  "description": "Fast native (Rust) gzip / brotli / zstd compression plugin for Rolldown, powered by napi-rs",
+  "keywords": [
+    "rolldown",
+    "rolldown-plugin",
+    "compression",
+    "gzip",
+    "brotli",
+    "zstd",
+    "napi-rs"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/medicomind/rolldown-compression.git"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "os": [
+    "darwin"
+  ]
+}

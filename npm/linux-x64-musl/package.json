@@ -1,0 +1,39 @@
+{
+  "name": "@medicomind/rolldown-compression-linux-x64-musl",
+  "version": "0.0.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "rolldown-compression.linux-x64-musl.node",
+  "files": [
+    "rolldown-compression.linux-x64-musl.node"
+  ],
+  "description": "Fast native (Rust) gzip / brotli / zstd compression plugin for Rolldown, powered by napi-rs",
+  "keywords": [
+    "rolldown",
+    "rolldown-plugin",
+    "compression",
+    "gzip",
+    "brotli",
+    "zstd",
+    "napi-rs"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/medicomind/rolldown-compression.git"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "musl"
+  ]
+}

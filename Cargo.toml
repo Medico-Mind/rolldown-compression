@@ -1,0 +1,25 @@
+[package]
+name = "rolldown-compression"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+brotli = "8"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+rayon = "1.12"
+zstd = "0.13"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = "symbols"

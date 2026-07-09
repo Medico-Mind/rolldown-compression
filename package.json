@@ -1,0 +1,95 @@
+{
+  "name": "@medicomind/rolldown-compression",
+  "version": "0.0.0",
+  "description": "Fast native (Rust) gzip / brotli / zstd compression plugin for Rolldown, powered by napi-rs",
+  "keywords": [
+    "rolldown",
+    "rolldown-plugin",
+    "compression",
+    "gzip",
+    "brotli",
+    "zstd",
+    "napi-rs"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/medicomind/rolldown-compression.git"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "index.js",
+    "index.d.ts",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">= 18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "napi": {
+    "binaryName": "rolldown-compression",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "bench": "node benchmark/index.mjs",
+    "changeset": "changeset",
+    "build": "napi build --platform --release && npm run build:ts",
+    "build:debug": "napi build --platform && npm run build:ts",
+    "build:native": "napi build --platform --release",
+    "build:ts": "tsdown",
+    "format": "biome check --write .",
+    "lint": "biome check .",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "universalize": "napi universalize",
+    "version-packages": "changeset version && napi version && npm install --package-lock-only"
+  },
+  "dependencies": {
+    "@rollup/pluginutils": "^5.4.0"
+  },
+  "peerDependencies": {
+    "rolldown": "^1.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.0",
+    "@napi-rs/cli": "^3.7.2",
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "fzstd": "^0.1.1",
+    "rolldown": "^1.1.5",
+    "tsdown": "^0.22.4",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
+  }
+}
