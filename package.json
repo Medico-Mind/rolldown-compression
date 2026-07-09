@@ -89,7 +89,7 @@
     "fzstd": "^0.1.1",
     "rolldown": "^1.1.5",
     "tsdown": "^0.22.4",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.0",
     "vitest": "^4.1.10"
   }
 }
