@@ -1,6 +1,6 @@
 {
   "name": "@medicomind/rolldown-compression",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Fast native (Rust) gzip / brotli / zstd compression plugin for Rolldown, powered by napi-rs",
   "keywords": [
     "rolldown",
