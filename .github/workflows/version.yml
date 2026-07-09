@@ -75,6 +75,8 @@ jobs:
             echo "::error::Could not determine published version from: $PUBLISHED_PACKAGES"
             exit 1
           fi
+          # changeset tag creates v-prefixed tags in single-package repos
+          # (pkg@version is monorepo-only), so the release ref is vX.Y.Z.
           gh workflow run release.yml --repo "$GITHUB_REPOSITORY" \
-            --ref "@medicomind/rolldown-compression@${VERSION}" \
+            --ref "v${VERSION}" \
             -f publish=true
