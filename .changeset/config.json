@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
-  "changelog": ["@changesets/changelog-github", { "repo": "medicomind/rolldown-compression" }],
+  "changelog": ["@changesets/changelog-github", { "repo": "Medico-Mind/rolldown-compression" }],
   "commit": false,
   "fixed": [],
   "linked": [],

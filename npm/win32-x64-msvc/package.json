@@ -24,7 +24,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/medicomind/rolldown-compression.git"
+    "url": "git+https://github.com/Medico-Mind/rolldown-compression.git"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
