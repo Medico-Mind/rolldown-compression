@@ -125,10 +125,8 @@ fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
     // the 18-byte gzip container. len/1000 over-covers the block overhead,
     // so the buffer never reallocates mid-compression.
     let bound = input.len() + input.len() / 1000 + 64;
-    let mut encoder = flate2::write::GzEncoder::new(
-        Vec::with_capacity(bound),
-        flate2::Compression::new(level),
-    );
+    let mut encoder =
+        flate2::write::GzEncoder::new(Vec::with_capacity(bound), flate2::Compression::new(level));
     encoder
         .write_all(input)
         .and_then(|_| encoder.finish())
@@ -329,8 +327,7 @@ mod tests {
         }
 
         let incompressible = pseudo_random(BROTLI_MULTI_THRESHOLD + 12_345);
-        let compressed =
-            compress(Algorithm::Brotli, 9, None, &incompressible).expect("compress");
+        let compressed = compress(Algorithm::Brotli, 9, None, &incompressible).expect("compress");
         assert_eq!(decompress(Algorithm::Brotli, &compressed), incompressible);
     }
 
