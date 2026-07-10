@@ -8,6 +8,8 @@
 
 Fast, native compression plugin for [Rolldown](https://rolldown.rs): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
 
+**4x faster builds in a real project**: switching a production app from `node:zlib`-based compression to this plugin cut total build time from 4:34 to 1:08 (235% → 784% CPU utilization) — see [real-world results](#real-world-results).
+
 Since v0.3.3 we are using PGO and Bolt optimizations in our native binaries. It reduce around 5-10% build compression time in some cases (see benchmarks).
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
@@ -131,11 +133,24 @@ example.com {
 
 ## Benchmark
 
+### Real-world results
+
+Switching a production app's build from `node:zlib`-based compression to this plugin (same algorithms and levels):
+
+```
+before: npm run build  639.62s user 5.84s system 235% cpu 4:34.06 total
+after:  npm run build  527.60s user 5.23s system 784% cpu 1:07.95 total
+```
+
+**4.03x faster wall clock.** Compression stops being serialized behind the libuv thread pool (default `UV_THREADPOOL_SIZE=4`) and runs on all cores instead — CPU utilization jumps from 235% to 784%.
+
+### Synthetic benchmark
+
 `npm run bench` (or `node benchmark/index.mjs --quick`) generates a dist-shaped fixture set — 200 files / ~48 MB with a long-tail size distribution — and compresses it with the native core vs `node:zlib` driven at full parallelism via `Promise.all` (the reference plugin's best case). Both sides always use the same levels.
 
 Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 
-### With PGO
+#### With PGO
 | scenario                          | output  | native (rust) | node:zlib | speedup |
 |-----------------------------------|---------|---------------|-----------|---------|
 | gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 10.90s        | 15.55s    | 1.43x   |
@@ -145,7 +160,7 @@ Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 | brotli (quality 6)                | 5.70 MB | 0.13s         | 0.16s     | 1.29x   |
 | zstd (level 19)                   | 3.28 MB | 2.32s         | 6.83s     | 2.94x   |
 
-### Without PGO
+#### Without PGO
 | scenario                          | output  | native (rust) | node:zlib | speedup |
 |-----------------------------------|---------|---------------|-----------|---------|
 | gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 10.41s        | 15.36s    | 1.48x   |
