@@ -64,6 +64,7 @@ describe('resolveOptions', () => {
     expect(resolved.skipIfLargerOrEqual).toBe(true)
     expect(resolved.deleteOriginalAssets).toBe(false)
     expect(resolved.concurrency).toBe(0)
+    expect(resolved.chunkSize).toBe(0)
     expect(resolved.logLevel).toBe('info')
     expect(resolved.enableInWatchMode).toBe(false)
   })
@@ -122,6 +123,8 @@ describe('resolveOptions', () => {
     expect(() => resolveOptions({ threshold: Number.NaN })).toThrow(/threshold/)
     expect(() => resolveOptions({ concurrency: -2 })).toThrow(/concurrency/)
     expect(() => resolveOptions({ concurrency: 1.5 })).toThrow(/concurrency/)
+    expect(() => resolveOptions({ chunkSize: -1 })).toThrow(/chunkSize/)
+    expect(() => resolveOptions({ chunkSize: 1.5 })).toThrow(/chunkSize/)
     // biome-ignore lint/suspicious/noExplicitAny: deliberately malformed input
     expect(() => resolveOptions({ logLevel: 'debug' as any })).toThrow(/logLevel/)
     // biome-ignore lint/suspicious/noExplicitAny: deliberately malformed input

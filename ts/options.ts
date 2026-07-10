@@ -93,6 +93,16 @@ export interface CompressionOptions {
    * @default 0
    */
   concurrency?: number
+  /**
+   * Maximum number of source bytes buffered per native compression batch.
+   * `0` batches every asset into a single call. A positive value bounds the
+   * plugin's peak memory overhead to roughly one batch of source copies plus
+   * its compressed outputs; a single asset larger than `chunkSize` still
+   * forms its own batch. Note the bundler keeps the original bundle in
+   * memory regardless.
+   * @default 0
+   */
+  chunkSize?: number
   /** @default 'info' */
   logLevel?: LogLevel
   /**
@@ -119,6 +129,7 @@ export interface ResolvedOptions {
   deleteOriginalAssets: boolean
   skipIfLargerOrEqual: boolean
   concurrency: number
+  chunkSize: number
   logLevel: LogLevel
   enableInWatchMode: boolean
 }
@@ -284,6 +295,7 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
     deleteOriginalAssets = false,
     skipIfLargerOrEqual = true,
     concurrency = 0,
+    chunkSize = 0,
     logLevel = 'info',
     enableInWatchMode = false,
   } = options
@@ -296,6 +308,11 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
   if (!Number.isInteger(concurrency) || concurrency < 0) {
     throw new OptionValidationError(
       `invalid concurrency: expected a non-negative integer, got ${JSON.stringify(concurrency)}`,
+    )
+  }
+  if (!Number.isInteger(chunkSize) || chunkSize < 0) {
+    throw new OptionValidationError(
+      `invalid chunkSize: expected a non-negative integer number of bytes, got ${JSON.stringify(chunkSize)}`,
     )
   }
   if (!LOG_LEVELS.includes(logLevel)) {
@@ -320,6 +337,7 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
     deleteOriginalAssets: Boolean(deleteOriginalAssets),
     skipIfLargerOrEqual: Boolean(skipIfLargerOrEqual),
     concurrency,
+    chunkSize,
     logLevel,
     enableInWatchMode: Boolean(enableInWatchMode),
   }

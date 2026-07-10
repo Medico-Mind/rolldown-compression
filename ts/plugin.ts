@@ -2,9 +2,11 @@
  * Rolldown plugin implementation.
  *
  * All eligible assets of a build are collected in `generateBundle` (while
- * they are still in memory) and compressed in a single batched FFI call; the
- * native module fans the work out across a rayon thread pool without ever
- * blocking the JS event loop.
+ * they are still in memory) and compressed in batched FFI calls; the native
+ * module fans the work out across a rayon thread pool without ever blocking
+ * the JS event loop. By default everything goes out in a single batch; a
+ * positive `chunkSize` flushes a batch whenever its source bytes reach that
+ * limit, so only one batch of buffer copies is alive at a time.
  */
 import type { Plugin } from 'rolldown'
 
@@ -75,8 +77,66 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
       }
 
       const startedAt = performance.now()
-      const pending: PendingArtifact[] = []
       const processedSources = new Set<string>()
+      const failures: string[] = []
+      const emittedBySource = new Map<string, number>()
+      const stats = new Map<string, { count: number; originalBytes: number; outputBytes: number }>()
+
+      let pending: PendingArtifact[] = []
+      let pendingSourceBytes = 0
+
+      const flush = async () => {
+        if (pending.length === 0) return
+        const batch = pending
+        pending = []
+        pendingSourceBytes = 0
+
+        const results = await compressBuffers(
+          batch.map((artifact) => artifact.task),
+          batch.map((artifact) => artifact.buffer),
+          {
+            concurrency: options.concurrency,
+            skipIfLargerOrEqual: options.skipIfLargerOrEqual,
+          },
+        )
+
+        for (const [index, result] of results.entries()) {
+          const artifact = batch[index]
+          if (artifact === undefined) continue
+
+          if (result.error !== undefined && result.error !== null) {
+            failures.push(`${result.fileName} (${result.algorithm}): ${result.error}`)
+            continue
+          }
+          if (result.skipped) {
+            logger.info(
+              `skipped ${artifact.outputFileName}: ${result.algorithm} output would not be smaller than the original`,
+            )
+            continue
+          }
+
+          this.emitFile({
+            type: 'asset',
+            fileName: artifact.outputFileName,
+            source: result.data,
+          })
+          emittedNames.add(artifact.outputFileName)
+          emittedBySource.set(
+            artifact.sourceFileName,
+            (emittedBySource.get(artifact.sourceFileName) ?? 0) + 1,
+          )
+
+          const stat = stats.get(result.algorithm) ?? {
+            count: 0,
+            originalBytes: 0,
+            outputBytes: 0,
+          }
+          stat.count += 1
+          stat.originalBytes += result.originalSize
+          stat.outputBytes += result.compressedSize
+          stats.set(result.algorithm, stat)
+        }
+      }
 
       for (const [fileName, output] of Object.entries(bundle)) {
         if (!options.filter(fileName)) continue
@@ -114,55 +174,16 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
           })
         }
         processedSources.add(fileName)
+
+        pendingSourceBytes += buffer.byteLength
+        if (options.chunkSize > 0 && pendingSourceBytes >= options.chunkSize) {
+          await flush()
+        }
       }
 
-      if (pending.length === 0) return
+      await flush()
 
-      const results = await compressBuffers(
-        pending.map((artifact) => artifact.task),
-        pending.map((artifact) => artifact.buffer),
-        {
-          concurrency: options.concurrency,
-          skipIfLargerOrEqual: options.skipIfLargerOrEqual,
-        },
-      )
-
-      const failures: string[] = []
-      const emittedBySource = new Map<string, number>()
-      const stats = new Map<string, { count: number; originalBytes: number; outputBytes: number }>()
-
-      for (const [index, result] of results.entries()) {
-        const artifact = pending[index]
-        if (artifact === undefined) continue
-
-        if (result.error !== undefined && result.error !== null) {
-          failures.push(`${result.fileName} (${result.algorithm}): ${result.error}`)
-          continue
-        }
-        if (result.skipped) {
-          logger.info(
-            `skipped ${artifact.outputFileName}: ${result.algorithm} output would not be smaller than the original`,
-          )
-          continue
-        }
-
-        this.emitFile({
-          type: 'asset',
-          fileName: artifact.outputFileName,
-          source: result.data,
-        })
-        emittedNames.add(artifact.outputFileName)
-        emittedBySource.set(
-          artifact.sourceFileName,
-          (emittedBySource.get(artifact.sourceFileName) ?? 0) + 1,
-        )
-
-        const stat = stats.get(result.algorithm) ?? { count: 0, originalBytes: 0, outputBytes: 0 }
-        stat.count += 1
-        stat.originalBytes += result.originalSize
-        stat.outputBytes += result.compressedSize
-        stats.set(result.algorithm, stat)
-      }
+      if (processedSources.size === 0) return
 
       if (failures.length > 0) {
         this.error(

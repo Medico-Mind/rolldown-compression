@@ -54,6 +54,7 @@ compression({
   deleteOriginalAssets: false,
   skipIfLargerOrEqual: true,
   concurrency: 0, // 0 = number of logical CPUs
+  chunkSize: 0, // 0 = compress everything in one batch
   logLevel: 'info',
 })
 ```
@@ -70,6 +71,7 @@ compression({
 | `deleteOriginalAssets` | `boolean` | `false` | Remove the original from the bundle after all algorithms processed it. Errors if `filename` resolves to the source name. |
 | `skipIfLargerOrEqual` | `boolean` | `true` | Don't emit artifacts whose compressed size is `>=` the original. |
 | `concurrency` | `number` | `0` | Native worker threads. `0` = number of logical CPUs. |
+| `chunkSize` | `number` | `0` | Max source bytes buffered per native compression batch. `0` = one batch for the whole build. A positive value (e.g. `64 * 1024 * 1024`) caps the plugin's peak memory overhead at roughly one batch of source copies plus its compressed outputs; a single file larger than `chunkSize` still forms its own batch. The bundler keeps the original bundle in memory regardless. |
 | `logLevel` | `'silent' \| 'error' \| 'warn' \| 'info'` | `'info'` | Plugin log verbosity; `info` prints a per-algorithm summary at build end. |
 | `enableInWatchMode` | `boolean` | `false` | The plugin is a no-op in watch/dev mode unless enabled (see [watch mode](#watch--dev-mode)). |
 
@@ -203,7 +205,7 @@ Node.js >= 18.
 - **No tarball plugin**: out of scope.
 - **gzip default level is 6** (zlib default), not 9 — measurably faster for a ~1% size difference. Pass `defineAlgorithm('gzip', { level: 9 })` to match the reference.
 - **zstd everywhere**: zstd is compiled in, with no dependency on the Node runtime's zstd support (node >= 22.15).
-- Extra options: `concurrency` (native thread cap) and `enableInWatchMode`.
+- Extra options: `concurrency` (native thread cap), `chunkSize` (memory cap per compression batch) and `enableInWatchMode`.
 
 ## Implementation decisions
 
