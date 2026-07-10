@@ -156,8 +156,10 @@ export function makeCorpus() {
     ['bundle.js.map', sourceMap],
     ['notes.txt', unicodeText],
   ]
-  // Small route chunk / medium feature bundle / large-ish asset per type.
+  // Tiny inline chunk / small route chunk / medium feature bundle /
+  // large-ish asset per type.
   const sizes = [
+    ['xs', 2 * KB],
     ['sm', 8 * KB],
     ['md', 96 * KB],
     ['lg', 768 * KB],
@@ -168,14 +170,25 @@ export function makeCorpus() {
     }
   }
 
-  // Vendor-bundle-sized JS: the dominant cost in a real build.
+  // Vendor-bundle-sized payloads: the dominant cost in a real build. Sized
+  // to cover every tier of the multi-threaded brotli path (>= 2 MiB): 2.5 MB
+  // -> 2 sections, 3 MB -> 3, 4 MB -> 4. The source map gives the large path
+  // a second entropy profile besides JS.
   add('vendor.js', jsModule(rand, 2.5 * MB))
+  add('vendor-large.js', jsModule(rand, 4 * MB))
+  add('vendor.js.map', sourceMap(rand, 3 * MB))
 
   // Base64 asset: text-encoded noise, compresses poorly but not never.
   add('font.woff2.css', base64Blob(rand, 192 * KB))
 
-  // Incompressible / degenerate payloads.
+  // Incompressible random payloads at several sizes; the 4 MB one drives the
+  // multi-threaded brotli path with input that yields almost no matches.
+  add('noise-xs.bin', randomBinary(rand, 4 * KB), false)
   add('asset.bin', randomBinary(rand, 256 * KB), false)
+  add('noise-md.bin', randomBinary(rand, 1 * MB), false)
+  add('noise-lg.bin', randomBinary(rand, 4 * MB), false)
+
+  // Degenerate payloads.
   add('zeros.dat', Buffer.alloc(1 * MB))
   add('empty.txt', Buffer.alloc(0))
   add('tiny.txt', Buffer.from('x'.repeat(16)))
