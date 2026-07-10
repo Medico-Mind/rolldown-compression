@@ -1,5 +1,15 @@
 # @medicomind/rolldown-compression
 
+## 0.3.4
+
+### Patch Changes
+
+- [`0d8f332`](https://github.com/Medico-Mind/rolldown-compression/commit/0d8f332e30b182dfffbc68b2a912e4a892b3fe0e) Thanks [@Mnwa](https://github.com/Mnwa)! - Add multicompress and threaded compress for zstd and brotli
+
+- [`25f3f8e`](https://github.com/Medico-Mind/rolldown-compression/commit/25f3f8eec15e6838ec64a2cb7eef4915f9e6a0c3) Thanks [@Mnwa](https://github.com/Mnwa)! - Add chunkSize option. It will reduce memory usage but increase time to compress.
+
+- [`ad7ce4b`](https://github.com/Medico-Mind/rolldown-compression/commit/ad7ce4b26e4809c40e8286a9f9a66957e03d9bcd) Thanks [@Mnwa](https://github.com/Mnwa)! - Add random buffers and big files to train corpus
+
 ## 0.3.3
 
 ### Patch Changes
