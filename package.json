@@ -5,11 +5,18 @@
   "keywords": [
     "rolldown",
     "rolldown-plugin",
+    "vite",
+    "vite-plugin",
     "compression",
+    "compress",
     "gzip",
     "brotli",
     "zstd",
-    "napi-rs"
+    "zstandard",
+    "rust",
+    "native",
+    "napi-rs",
+    "performance"
   ],
   "license": "MIT",
   "repository": {

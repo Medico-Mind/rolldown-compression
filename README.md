@@ -6,7 +6,7 @@
 [![node](https://img.shields.io/node/v/%40medicomind%2Frolldown-compression)](https://www.npmjs.com/package/@medicomind/rolldown-compression)
 [![license](https://img.shields.io/npm/l/%40medicomind%2Frolldown-compression)](./LICENSE)
 
-Fast, native compression plugin for [Rolldown](https://rolldown.rs): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
+Fast, native compression plugin for [Rolldown](https://rolldown.rs) and [Vite 8+](#usage-with-vite): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
 
 **4x faster builds in a real project**: switching a production app from `node:zlib`-based compression to this plugin cut total build time from 4:34 to 1:08 (235% → 784% CPU utilization) — see [real-world results](#real-world-results).
 
@@ -61,6 +61,24 @@ compression({
 })
 ```
 
+## Usage with Vite
+
+[Vite 8+](https://vite.dev/blog/announcing-vite8) uses Rolldown as its bundler, so the plugin works there out of the box:
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite'
+import { compression } from '@medicomind/rolldown-compression'
+
+export default defineConfig({
+  plugins: [compression()],
+})
+```
+
+- The plugin declares `apply: 'build'`, so it only runs for `vite build` — the dev server is untouched.
+- On Vite 6/7 use the [`rolldown-vite`](https://vite.dev/guide/rolldown) package (aliased as `vite`) to get the Rolldown-based build.
+- All [options](#options) are the same as with plain Rolldown, and mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression) — for most projects it's a drop-in replacement (see [differences](#differences-from-vite-plugin-compression2)).
+
 ## Options
 
 | option | type | default | description |
@@ -106,7 +124,7 @@ Limitation: assets written to disk by other plugins in `writeBundle`/`closeBundl
 
 ### Watch / dev mode
 
-The plugin declares `apply: 'build'` (honored by Vite-style hosts such as `rolldown-vite`) **and** checks `this.meta.watchMode` at `generateBundle` time, making it a no-op under `rolldown --watch`. Set `enableInWatchMode: true` to compress in watch builds anyway.
+The plugin declares `apply: 'build'` (honored by Vite / `rolldown-vite`) **and** checks `this.meta.watchMode` at `generateBundle` time, making it a no-op under `rolldown --watch`. Set `enableInWatchMode: true` to compress in watch builds anyway.
 
 ## Serving pre-compressed assets
 
