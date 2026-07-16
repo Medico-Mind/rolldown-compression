@@ -91,6 +91,21 @@ jobs:
             build: >-
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
               --napi-args="--target x86_64-pc-windows-msvc"
+          # wasm fallback for platforms without a prebuilt native binding
+          # (published as @medicomind/rolldown-compression-wasm32-wasi and
+          # loaded by index.js when every native require fails). Plain
+          # release build — the PGO pipeline doesn't apply to wasm. wasi-sdk
+          # provides the clang toolchain for zstd-sys's C sources; napi
+          # build picks it up through WASI_SDK_PATH. The smoke test loads
+          # the wasm binding under Node and runs one real compression batch,
+          # exercising the threaded (rayon) path end to end.
+          - host: ubuntu-latest
+            target: wasm32-wasip1-threads
+            build: |
+              curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
+              export WASI_SDK_PATH="$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux"
+              npx napi build --platform --release --target wasm32-wasip1-threads
+              NAPI_RS_FORCE_WASI=error node scripts/wasm-smoke.mjs
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
@@ -129,10 +144,21 @@ jobs:
       - name: Build (PGO)
         run: ${{ matrix.settings.build }}
         shell: bash
+      # Native targets produce one *.node file; the wasm target produces the
+      # *.wasm binary plus the JS glue (loader, browser entry, workers) that
+      # `napi artifacts --build-output-dir` copies into npm/wasm32-wasi at
+      # publish time. The debug wasm build is excluded — it is never
+      # published.
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: '*.node'
+          path: |
+            *.node
+            *.wasm
+            !*.debug.wasm
+            *.wasi.cjs
+            *.wasi-browser.js
+            wasi-worker*.mjs
           if-no-files-found: error
 
   publish:
@@ -155,8 +181,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      # --build-output-dir points at the wasm bindings artifact: napi
+      # artifacts collects *.node/*.wasm recursively from --output-dir, but
+      # reads the wasm JS glue files from the build output dir.
       - name: Move artifacts into platform packages
-        run: npx napi artifacts --output-dir artifacts
+        run: >-
+          npx napi artifacts --output-dir artifacts
+          --build-output-dir artifacts/bindings-wasm32-wasip1-threads
       - name: List packages
         run: ls -R npm
       # The published root package must declare every npm/* platform package

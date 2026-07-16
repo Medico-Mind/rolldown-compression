@@ -8,6 +8,15 @@ coverage/
 *.node
 npm/**/*.node
 
+# napi wasm build outputs (generated at the repo root by
+# `napi build --target wasm32-wasip1-threads`; published from npm/wasm32-wasi)
+*.wasm
+/rolldown-compression.wasi.cjs
+/rolldown-compression.wasi-browser.js
+/wasi-worker.mjs
+/wasi-worker-browser.mjs
+/browser.js
+
 # Benchmark fixtures (generated)
 benchmark/.fixtures/
 

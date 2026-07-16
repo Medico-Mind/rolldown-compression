@@ -1,12 +1,16 @@
 {
-  "name": "@medicomind/rolldown-compression-linux-arm64-gnu",
+  "name": "@medicomind/rolldown-compression-wasm32-wasi",
   "version": "0.3.4",
   "cpu": [
-    "arm64"
+    "wasm32"
   ],
-  "main": "rolldown-compression.linux-arm64-gnu.node",
+  "main": "rolldown-compression.wasi.cjs",
   "files": [
-    "rolldown-compression.linux-arm64-gnu.node"
+    "rolldown-compression.wasm32-wasi.wasm",
+    "rolldown-compression.wasi.cjs",
+    "rolldown-compression.wasi-browser.js",
+    "wasi-worker.mjs",
+    "wasi-worker-browser.mjs"
   ],
   "description": "Fast native (Rust) gzip / brotli / zstd compression plugin for Rolldown, powered by napi-rs",
   "keywords": [
@@ -30,10 +34,10 @@
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "os": [
-    "linux"
-  ],
-  "libc": [
-    "glibc"
-  ]
+  "browser": "rolldown-compression.wasi-browser.js",
+  "dependencies": {
+    "@napi-rs/wasm-runtime": "^1.1.6",
+    "@emnapi/core": "1.11.2",
+    "@emnapi/runtime": "1.11.2"
+  }
 }

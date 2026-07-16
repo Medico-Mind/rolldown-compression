@@ -52,6 +52,42 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:coverage
 
+  test-wasm:
+    name: Test (wasm32-wasip1-threads fallback)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1-threads
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-wasip1-threads
+      # clang toolchain for zstd-sys's C sources; napi build picks it up
+      # through WASI_SDK_PATH.
+      - name: Install wasi-sdk
+        run: |
+          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          echo "WASI_SDK_PATH=$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npx napi build --platform --release --target wasm32-wasip1-threads
+      # 'error' forbids the silent fallback to a native .node, proving the
+      # wasm binding itself loads and compresses.
+      - name: Smoke test wasm binding
+        run: NAPI_RS_FORCE_WASI=error node scripts/wasm-smoke.mjs
+      # The full suite runs with 'true' (prefer wasm, keep native when a
+      # package has no wasm binding): rolldown itself is napi-rs based and
+      # ships no wasm package here, so 'error' would break its loader. The
+      # smoke test above already guarantees our binding is the wasm one.
+      - name: Run tests against wasm binding
+        run: npm test
+        env:
+          NAPI_RS_FORCE_WASI: 'true'
+
   benchmark:
     name: Benchmark (manual)
     if: github.event_name == 'workflow_dispatch'

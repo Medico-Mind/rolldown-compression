@@ -213,6 +213,22 @@ Prebuilt binaries are published for:
 
 Node.js >= 18.
 
+### WebAssembly fallback
+
+A [WASI build](https://napi.rs/docs/concepts/webassembly)
+(`@medicomind/rolldown-compression-wasm32-wasi`) is published for platforms
+without a prebuilt native binary. The loader falls back to it automatically
+when no native binding can be loaded — expect several times slower compression
+than native (~5x in a quick local benchmark).
+
+Package managers skip optional dependencies whose `cpu` field doesn't match
+the host, so on an unsupported platform the wasm package must be opted into:
+
+- **npm**: `npm install --cpu wasm32 @medicomind/rolldown-compression-wasm32-wasi`
+  (or add it as a regular `devDependency`).
+- **yarn**: add `supportedArchitectures: { cpu: ["current", "wasm32"] }` to `.yarnrc.yml`.
+- **pnpm**: add `supportedArchitectures: { cpu: ["current", "wasm32"] }` under `pnpm` in `package.json`.
+
 ## Differences from vite-plugin-compression2
 
 - **Native speed**: compression runs in Rust on all cores, one FFI batch per build, instead of `node:zlib` calls through the libuv thread pool.
