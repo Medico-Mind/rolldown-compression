@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 0.3.5
+
+### Patch Changes
+
+- [`f362b51`](https://github.com/Medico-Mind/rolldown-compression/commit/f362b51d6149caebb511d93445ae0bf17746c756) Thanks [@Mnwa](https://github.com/Mnwa)! - Add a wasm build
+
 ## 0.3.4
 
 ### Patch Changes
