@@ -61,11 +61,8 @@ pub fn run_batch(
 
 fn process_compress(items: &[BatchItem<'_>], skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
     let mut outcomes: Vec<BatchOutcome> = vec![Default::default(); items.len()];
-    
-    let mut tasks: Vec<(usize, &mut BatchOutcome)> = outcomes
-        .iter_mut()
-        .enumerate()
-        .collect();
+
+    let mut tasks: Vec<(usize, &mut BatchOutcome)> = outcomes.iter_mut().enumerate().collect();
 
     tasks.par_sort_unstable_by_key(|&(i, _)| std::cmp::Reverse(estimated_cost(&items[i])));
 
