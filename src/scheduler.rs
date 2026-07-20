@@ -24,6 +24,7 @@ pub struct BatchItem<'a> {
 /// - `skipped` is true: compressed output was >= input size and skipping was
 ///   requested, `data` is empty;
 /// - otherwise `data` holds the compressed bytes.
+#[derive(Clone)]
 pub struct BatchOutcome {
     pub data: Vec<u8>,
     pub skipped: bool,
@@ -51,8 +52,7 @@ pub fn run_batch(
     order.sort_by_key(|&index| std::cmp::Reverse(estimated_cost(&items[index])));
 
     let work = || {
-        let mut outcomes: Vec<Option<BatchOutcome>> = Vec::new();
-        outcomes.resize_with(items.len(), || None);
+        let mut outcomes: Vec<Option<BatchOutcome>> = vec![Default::default(); items.len()];
         let computed: Vec<(usize, BatchOutcome)> = order
             .par_iter()
             // Allow every item to be stolen individually; batches of a few
