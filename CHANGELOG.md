@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 1.0.0
+
+### Major Changes
+
+- [`c3a02d2`](https://github.com/Medico-Mind/rolldown-compression/commit/c3a02d202d89e734f52766fe6d766780a9619605) Thanks [@Mnwa](https://github.com/Mnwa)! - Stabilize API
+
 ## 0.3.5
 
 ### Patch Changes
