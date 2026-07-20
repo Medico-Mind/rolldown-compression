@@ -45,39 +45,39 @@ pub fn run_batch(
     concurrency: usize,
     skip_if_larger_or_equal: bool,
 ) -> Vec<BatchOutcome> {
-    // Most-expensive-first scheduling: a large brotli task started late would
-    // stretch the batch tail on an otherwise idle pool. Outcomes are written
-    // back by index, so output order (and determinism) is unaffected.
-    let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_by_key(|&index| std::cmp::Reverse(estimated_cost(&items[index])));
-
-    let work = || {
-        let mut outcomes: Vec<Option<BatchOutcome>> = vec![Default::default(); items.len()];
-        let computed: Vec<(usize, BatchOutcome)> = order
-            .par_iter()
-            // Allow every item to be stolen individually; batches of a few
-            // large files balance poorly with rayon's default chunking.
-            .with_max_len(1)
-            .map(|&index| (index, run_one(&items[index], skip_if_larger_or_equal)))
-            .collect();
-        for (index, outcome) in computed {
-            outcomes[index] = Some(outcome);
-        }
-        outcomes.into_iter().map(Option::unwrap).collect()
-    };
-
     if concurrency == 0 {
-        return work();
+        return process_compress(&items, skip_if_larger_or_equal);
     }
 
     match rayon::ThreadPoolBuilder::new()
         .num_threads(concurrency)
         .build()
     {
-        Ok(pool) => pool.install(work),
+        Ok(pool) => pool.install(|| process_compress(&items, skip_if_larger_or_equal)),
         // Falling back to the global pool is better than failing the batch.
-        Err(_) => work(),
+        Err(_) => process_compress(&items, skip_if_larger_or_equal),
     }
+}
+
+fn process_compress(items: &[BatchItem<'_>], skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
+    // Most-expensive-first scheduling: a large brotli task started late would
+    // stretch the batch tail on an otherwise idle pool. Outcomes are written
+    // back by index, so output order (and determinism) is unaffected.
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.par_sort_by_key(|&index| std::cmp::Reverse(estimated_cost(&items[index])));
+
+    let mut outcomes: Vec<Option<BatchOutcome>> = vec![Default::default(); items.len()];
+    let computed: Vec<(usize, BatchOutcome)> = order
+        .par_iter()
+        // Allow every item to be stolen individually; batches of a few
+        // large files balance poorly with rayon's default chunking.
+        .with_max_len(1)
+        .map(|&index| (index, run_one(&items[index], skip_if_larger_or_equal)))
+        .collect();
+    for (index, outcome) in computed {
+        outcomes[index] = Some(outcome);
+    }
+    outcomes.into_iter().map(Option::unwrap).collect()
 }
 
 /// Rough relative CPU cost of an item, used only for scheduling order.
