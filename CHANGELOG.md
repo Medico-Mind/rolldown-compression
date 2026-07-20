@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 1.0.1
+
+### Patch Changes
+
+- [`6b1ad48`](https://github.com/Medico-Mind/rolldown-compression/commit/6b1ad4873aa83cde7fb6c038c609094045c901c5) Thanks [@Mnwa](https://github.com/Mnwa)! - Speed up compress batches processing
+
 ## 1.0.0
 
 ### Major Changes
