@@ -101,8 +101,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run build:pgo
-      - name: Run benchmark
+      - name: Run node benchmark
         run: |
           echo '## Benchmark results' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
           node benchmark/index.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Run PGO benchmark
+        run: |
+          echo '## Benchmark results' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          node benchmark/pgo-compare.mjs | tee -a "$GITHUB_STEP_SUMMARY"
