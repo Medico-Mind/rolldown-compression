@@ -99,6 +99,7 @@ jobs:
           node-version: 26
           cache: npm
       - uses: Swatinem/rust-cache@v2
+      - run: rustup component add llvm-tools
       - run: npm ci
       - run: npm run build:pgo
       - name: Run node benchmark
