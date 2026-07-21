@@ -3,15 +3,15 @@
 //! Pure Rust module with no napi dependency so it can be unit tested with
 //! plain `cargo test`.
 
-use std::cell::RefCell;
-use std::io::Write;
-
 use brotli::enc::threading::{Owned, SendAlloc};
 use brotli::enc::{
     BrotliEncoderMaxCompressedSize, BrotliEncoderMaxCompressedSizeMulti, BrotliEncoderParams,
     CompressionThreadResult, SliceWrapper, StandardAlloc, UnionHasher, WorkerPool,
     compress_worker_pool, new_work_pool,
 };
+use std::cell::RefCell;
+use std::io::Write;
+use std::sync::Mutex;
 
 /// Supported compression algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,14 +162,35 @@ type BrotliWorkerPool = WorkerPool<
     (HeapSlice, BrotliEncoderParams),
 >;
 
-thread_local! {
-    /// Process-wide brotli worker pool plus the section budget it was sized for.
-    static BROTLI_WORKER_POOL: RefCell<BrotliWorkerPool> = {
-         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+/// Process-wide cache of brotli worker pools. Each concurrent large-file job
+/// checks out its own pool so jobs never serialize behind one another; the
+/// mutex is held only for the pop/push, never during compression. Pools are
+/// never dropped from a thread-exit path — on Windows a TLS destructor holds
+/// the loader lock, and `WorkerPool::drop` joining its threads there
+/// deadlocks the process.
+static BROTLI_WORKER_POOLS: Mutex<Vec<BrotliWorkerPool>> = Mutex::new(Vec::new());
+
+fn with_brotli_pool<R>(f: impl FnOnce(&mut BrotliWorkerPool) -> R) -> R {
+    let checked_out = BROTLI_WORKER_POOLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop();
+    let mut pool = checked_out.unwrap_or_else(|| {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
         // The calling thread compresses the last section itself, so a budget
         // of `threads` sections needs only `threads - 1` pool workers.
-        RefCell::new(new_work_pool(threads.saturating_sub(1)))
-    };
+        new_work_pool(threads.saturating_sub(1))
+    });
+    let result = f(&mut pool);
+    // If `f` unwinds the pool is dropped instead of returned; that join runs
+    // on a regular thread, not in a TLS destructor, so it cannot deadlock.
+    BROTLI_WORKER_POOLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(pool);
+    result
 }
 
 /// Compress large inputs by splitting them into ~`section_size` sections
@@ -198,8 +219,7 @@ fn compress_brotli(
     if input.len() >= 2 * section_size {
         let num_sections =
             (input.len() / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        BROTLI_WORKER_POOL
-            .with_borrow_mut(|pool| compress_brotli_pooled(&params, num_sections, pool, input))
+        with_brotli_pool(|pool| compress_brotli_pooled(&params, num_sections, pool, input))
     } else {
         compress_brotli_single(&params, input)
     }
