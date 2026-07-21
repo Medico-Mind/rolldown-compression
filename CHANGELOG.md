@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 1.2.1
+
+### Patch Changes
+
+- [`62cadfa`](https://github.com/Medico-Mind/rolldown-compression/commit/62cadfaf974826ea19ffb108cdefc28068b2f674) Thanks [@Mnwa](https://github.com/Mnwa)! - Return thread local but remove it for windows
+
+- [`47763fa`](https://github.com/Medico-Mind/rolldown-compression/commit/47763fa3c0d4f6fa0c1c1a08a8042e2e04d4ee6f) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix windows deadlock
+
 ## 1.2.0
 
 ### Minor Changes
