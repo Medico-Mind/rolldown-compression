@@ -179,6 +179,7 @@ function createBatchRunner(
           algorithm: algorithm.algorithm,
           level: algorithm.level,
           windowBits: algorithm.windowBits,
+          sectionSize: algorithm.sectionSize,
         },
         buffer,
         sourceFileName: fileName,

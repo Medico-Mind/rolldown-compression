@@ -24,13 +24,9 @@ pub enum Algorithm {
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
-/// Inputs at least this large are split into multiple sections on the global
-/// brotli worker pool; below it a cross-file rayon batch already keeps all
-/// cores busy and splitting would only cost ratio.
-const BROTLI_MULTI_THRESHOLD: usize = 2 * 1024 * 1024;
-/// Target section size per brotli worker thread. Sections much smaller than
-/// the window lose too many cross-section matches.
-const BROTLI_MULTI_SECTION: usize = 1024 * 1024;
+/// Default target section size per brotli worker thread. Sections much
+/// smaller than the window lose too many cross-section matches.
+pub const BROTLI_DEFAULT_SECTION_SIZE: u32 = 1024 * 1024;
 const BROTLI_MIN_THREADS: usize = 2;
 const BROTLI_MAX_THREADS: usize = 4;
 
@@ -96,13 +92,25 @@ pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a brotli section size in bytes.
+pub fn validate_section_size(section_size: u32) -> Result<(), String> {
+    if section_size == 0 {
+        return Err(format!(
+            "invalid brotli sectionSize {section_size}: expected a positive number of bytes"
+        ));
+    }
+    Ok(())
+}
+
 /// Compress `input` with the given algorithm and level.
 ///
-/// `window_bits` is only used by brotli and ignored by other algorithms.
+/// `window_bits` and `section_size` are only used by brotli and ignored by
+/// other algorithms.
 pub fn compress(
     algorithm: Algorithm,
     level: u32,
     window_bits: Option<u32>,
+    section_size: Option<u32>,
     input: &[u8],
 ) -> Result<Vec<u8>, String> {
     algorithm.validate_level(level)?;
@@ -111,7 +119,9 @@ pub fn compress(
         Algorithm::Brotli => {
             let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
             validate_window_bits(window_bits)?;
-            compress_brotli(level, window_bits, input)
+            let section_size = section_size.unwrap_or(BROTLI_DEFAULT_SECTION_SIZE);
+            validate_section_size(section_size)?;
+            compress_brotli(level, window_bits, section_size as usize, input)
         }
         Algorithm::Zstd => compress_zstd(level, input),
     }?;
@@ -162,24 +172,32 @@ thread_local! {
     };
 }
 
-/// Compress large inputs by splitting them into ~[`BROTLI_MULTI_SECTION`]
-/// sections spread over the global worker pool; smaller inputs stay in one
-/// section on the calling thread.
+/// Compress large inputs by splitting them into ~`section_size` sections
+/// spread over the global worker pool; smaller inputs stay in one section on
+/// the calling thread.
 ///
-/// The section count depends on the pool's thread budget, so output bytes for
-/// inputs past [`BROTLI_MULTI_THRESHOLD`] are stable within a process but may
+/// Inputs at least twice `section_size` are split; below that a cross-file
+/// rayon batch already keeps all cores busy and splitting would only cost
+/// ratio. The section count depends on the pool's thread budget, so output
+/// bytes for inputs past that threshold are stable within a process but may
 /// differ across machines or `concurrency` settings. Sectioning costs a
 /// fraction of a percent of ratio versus a single stream, in exchange for
 /// finishing the large files that dominate a batch tail several times faster.
-fn compress_brotli(quality: u32, window_bits: u32, input: &[u8]) -> Result<Vec<u8>, String> {
+fn compress_brotli(
+    quality: u32,
+    window_bits: u32,
+    section_size: usize,
+    input: &[u8],
+) -> Result<Vec<u8>, String> {
     let params = BrotliEncoderParams {
         quality: quality as i32,
         lgwin: window_bits as i32,
         size_hint: input.len(),
         ..Default::default()
     };
-    if input.len() > BROTLI_MULTI_THRESHOLD {
-        let num_sections = (input.len() / BROTLI_MULTI_SECTION).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+    if input.len() >= 2 * section_size {
+        let num_sections =
+            (input.len() / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
         BROTLI_WORKER_POOL
             .with_borrow_mut(|pool| compress_brotli_pooled(&params, num_sections, pool, input))
     } else {
@@ -248,6 +266,11 @@ mod tests {
 
     const ALGORITHMS: [Algorithm; 3] = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
 
+    /// Default section size and the multi-section threshold derived from it,
+    /// mirroring the on-the-fly computation in `compress_brotli`.
+    const DEFAULT_SECTION_SIZE: usize = BROTLI_DEFAULT_SECTION_SIZE as usize;
+    const DEFAULT_MULTI_THRESHOLD: usize = 2 * DEFAULT_SECTION_SIZE;
+
     fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {
         match algorithm {
             Algorithm::Gzip => {
@@ -283,8 +306,8 @@ mod tests {
     fn round_trips_all_algorithms() {
         let input = b"the quick brown fox jumps over the lazy dog".repeat(100);
         for algorithm in ALGORITHMS {
-            let compressed =
-                compress(algorithm, algorithm.default_level(), None, &input).expect("compress");
+            let compressed = compress(algorithm, algorithm.default_level(), None, None, &input)
+                .expect("compress");
             assert!(
                 compressed.len() < input.len(),
                 "{} should shrink repetitive input",
@@ -303,7 +326,7 @@ mod tests {
     fn round_trips_empty_buffer() {
         for algorithm in ALGORITHMS {
             let compressed =
-                compress(algorithm, algorithm.default_level(), None, &[]).expect("compress");
+                compress(algorithm, algorithm.default_level(), None, None, &[]).expect("compress");
             assert_eq!(decompress(algorithm, &compressed), Vec::<u8>::new());
         }
     }
@@ -311,8 +334,8 @@ mod tests {
     #[test]
     fn round_trips_single_byte() {
         for algorithm in ALGORITHMS {
-            let compressed =
-                compress(algorithm, algorithm.default_level(), None, &[0x42]).expect("compress");
+            let compressed = compress(algorithm, algorithm.default_level(), None, None, &[0x42])
+                .expect("compress");
             assert_eq!(decompress(algorithm, &compressed), vec![0x42]);
         }
     }
@@ -321,8 +344,8 @@ mod tests {
     fn round_trips_incompressible_data() {
         let input = pseudo_random(256 * 1024);
         for algorithm in ALGORITHMS {
-            let compressed =
-                compress(algorithm, algorithm.default_level(), None, &input).expect("compress");
+            let compressed = compress(algorithm, algorithm.default_level(), None, None, &input)
+                .expect("compress");
             assert_eq!(decompress(algorithm, &compressed), input);
         }
     }
@@ -331,8 +354,8 @@ mod tests {
     fn round_trips_highly_compressible_data() {
         let input = vec![0u8; 1024 * 1024];
         for algorithm in ALGORITHMS {
-            let compressed =
-                compress(algorithm, algorithm.default_level(), None, &input).expect("compress");
+            let compressed = compress(algorithm, algorithm.default_level(), None, None, &input)
+                .expect("compress");
             assert!(compressed.len() < input.len() / 100);
             assert_eq!(decompress(algorithm, &compressed), input);
         }
@@ -340,20 +363,21 @@ mod tests {
 
     #[test]
     fn round_trips_large_brotli_inputs_via_multithreaded_path() {
-        // Sized to cross BROTLI_MULTI_THRESHOLD and exercise the worker pool.
+        // Sized to cross DEFAULT_MULTI_THRESHOLD and exercise the worker pool.
         // Moderate qualities keep the debug-build test runtime reasonable;
         // the sectioning machinery is identical at every quality.
         let compressible = b"export const value = 42; // padding padding\n".repeat(52_000);
-        assert!(compressible.len() >= BROTLI_MULTI_THRESHOLD);
+        assert!(compressible.len() >= DEFAULT_MULTI_THRESHOLD);
         for level in [5, 9] {
             let compressed =
-                compress(Algorithm::Brotli, level, None, &compressible).expect("compress");
+                compress(Algorithm::Brotli, level, None, None, &compressible).expect("compress");
             assert!(compressed.len() < compressible.len());
             assert_eq!(decompress(Algorithm::Brotli, &compressed), compressible);
         }
 
-        let incompressible = pseudo_random(BROTLI_MULTI_THRESHOLD + 12_345);
-        let compressed = compress(Algorithm::Brotli, 9, None, &incompressible).expect("compress");
+        let incompressible = pseudo_random(DEFAULT_MULTI_THRESHOLD + 12_345);
+        let compressed =
+            compress(Algorithm::Brotli, 9, None, None, &incompressible).expect("compress");
         assert_eq!(decompress(Algorithm::Brotli, &compressed), incompressible);
     }
 
@@ -363,7 +387,7 @@ mod tests {
         // it first, so pin a dedicated pool to guarantee multi-section
         // coverage: 4 sections need 3 pool workers plus the calling thread.
         let input = b"export const value = 42; // padding padding\n".repeat(104_000);
-        let num_sections = input.len() / BROTLI_MULTI_SECTION;
+        let num_sections = input.len() / DEFAULT_SECTION_SIZE;
         assert!(num_sections >= 4);
         let params = BrotliEncoderParams {
             quality: 5,
@@ -381,9 +405,9 @@ mod tests {
     #[test]
     fn multithreaded_brotli_is_deterministic() {
         let input = b"function chunk(a, b) { return a + b; }\n".repeat(58_000);
-        assert!(input.len() >= BROTLI_MULTI_THRESHOLD);
-        let first = compress(Algorithm::Brotli, 5, None, &input).expect("compress");
-        let second = compress(Algorithm::Brotli, 5, None, &input).expect("compress");
+        assert!(input.len() >= DEFAULT_MULTI_THRESHOLD);
+        let first = compress(Algorithm::Brotli, 5, None, None, &input).expect("compress");
+        let second = compress(Algorithm::Brotli, 5, None, None, &input).expect("compress");
         assert_eq!(first, second);
     }
 
@@ -393,7 +417,7 @@ mod tests {
         for algorithm in ALGORITHMS {
             let (min, max) = algorithm.level_range();
             for level in [min, max] {
-                let compressed = compress(algorithm, level, None, &input).expect("compress");
+                let compressed = compress(algorithm, level, None, None, &input).expect("compress");
                 assert_eq!(decompress(algorithm, &compressed), input);
             }
         }
@@ -404,8 +428,8 @@ mod tests {
         let input = b"abcdefghij klmnopqrst 0123456789 ".repeat(5000);
         for algorithm in ALGORITHMS {
             let (min, max) = algorithm.level_range();
-            let low = compress(algorithm, min.max(1), None, &input).unwrap();
-            let high = compress(algorithm, max, None, &input).unwrap();
+            let low = compress(algorithm, min.max(1), None, None, &input).unwrap();
+            let high = compress(algorithm, max, None, None, &input).unwrap();
             assert!(
                 high.len() <= low.len(),
                 "{}: level {max} produced {} bytes vs {} at min level",
@@ -418,18 +442,38 @@ mod tests {
 
     #[test]
     fn rejects_invalid_levels() {
-        assert!(compress(Algorithm::Gzip, 10, None, b"x").is_err());
-        assert!(compress(Algorithm::Brotli, 12, None, b"x").is_err());
-        assert!(compress(Algorithm::Zstd, 0, None, b"x").is_err());
-        assert!(compress(Algorithm::Zstd, 23, None, b"x").is_err());
+        assert!(compress(Algorithm::Gzip, 10, None, None, b"x").is_err());
+        assert!(compress(Algorithm::Brotli, 12, None, None, b"x").is_err());
+        assert!(compress(Algorithm::Zstd, 0, None, None, b"x").is_err());
+        assert!(compress(Algorithm::Zstd, 23, None, None, b"x").is_err());
     }
 
     #[test]
     fn rejects_invalid_window_bits() {
-        assert!(compress(Algorithm::Brotli, 11, Some(9), b"x").is_err());
-        assert!(compress(Algorithm::Brotli, 11, Some(25), b"x").is_err());
-        assert!(compress(Algorithm::Brotli, 11, Some(10), b"x").is_ok());
-        assert!(compress(Algorithm::Brotli, 11, Some(24), b"x").is_ok());
+        assert!(compress(Algorithm::Brotli, 11, Some(9), None, b"x").is_err());
+        assert!(compress(Algorithm::Brotli, 11, Some(25), None, b"x").is_err());
+        assert!(compress(Algorithm::Brotli, 11, Some(10), None, b"x").is_ok());
+        assert!(compress(Algorithm::Brotli, 11, Some(24), None, b"x").is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_section_size() {
+        assert!(compress(Algorithm::Brotli, 11, None, Some(0), b"x").is_err());
+        assert!(compress(Algorithm::Brotli, 11, None, Some(1), b"x").is_ok());
+    }
+
+    #[test]
+    fn honors_custom_section_size() {
+        // 256 KiB sections push a ~1 MB input through the multithreaded path
+        // that the default section size would compress single-threaded.
+        let input = b"export const value = 42; // padding padding\n".repeat(24_000);
+        let section_size = 256 * 1024_u32;
+        assert!(input.len() >= 2 * section_size as usize);
+        assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
+        let compressed =
+            compress(Algorithm::Brotli, 5, None, Some(section_size), &input).expect("compress");
+        assert!(compressed.len() < input.len());
+        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
 
     #[test]

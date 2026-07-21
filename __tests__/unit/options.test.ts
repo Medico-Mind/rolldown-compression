@@ -22,9 +22,12 @@ describe('defineAlgorithm', () => {
   })
 
   it('keeps provided options', () => {
-    expect(defineAlgorithm('brotli', { quality: 9, windowBits: 20 }).options).toEqual({
+    expect(
+      defineAlgorithm('brotli', { quality: 9, windowBits: 20, sectionSize: 512 * 1024 }).options,
+    ).toEqual({
       quality: 9,
       windowBits: 20,
+      sectionSize: 512 * 1024,
     })
   })
 
@@ -39,6 +42,9 @@ describe('defineAlgorithm', () => {
     expect(() => defineAlgorithm('brotli', { quality: 12 })).toThrow(/brotli quality/)
     expect(() => defineAlgorithm('brotli', { windowBits: 9 })).toThrow(/brotli windowBits/)
     expect(() => defineAlgorithm('brotli', { windowBits: 25 })).toThrow(/brotli windowBits/)
+    expect(() => defineAlgorithm('brotli', { sectionSize: 0 })).toThrow(/brotli sectionSize/)
+    expect(() => defineAlgorithm('brotli', { sectionSize: 1.5 })).toThrow(/brotli sectionSize/)
+    expect(() => defineAlgorithm('brotli', { sectionSize: 2 ** 32 })).toThrow(/brotli sectionSize/)
     expect(() => defineAlgorithm('zstd', { level: 0 })).toThrow(/zstd level/)
     expect(() => defineAlgorithm('zstd', { level: 23 })).toThrow(/zstd level/)
   })
@@ -77,11 +83,15 @@ describe('resolveOptions', () => {
 
   it('normalizes string shorthands and defineAlgorithm entries', () => {
     const resolved = resolveOptions({
-      algorithms: ['gz', defineAlgorithm('brotli', { quality: 5, windowBits: 18 }), 'zstandard'],
+      algorithms: [
+        'gz',
+        defineAlgorithm('brotli', { quality: 5, windowBits: 18, sectionSize: 256 * 1024 }),
+        'zstandard',
+      ],
     })
     expect(resolved.algorithms).toEqual([
       { algorithm: 'gzip', level: 6, extension: '.gz' },
-      { algorithm: 'brotli', level: 5, windowBits: 18, extension: '.br' },
+      { algorithm: 'brotli', level: 5, windowBits: 18, sectionSize: 256 * 1024, extension: '.br' },
       { algorithm: 'zstd', level: 19, extension: '.zst' },
     ])
   })

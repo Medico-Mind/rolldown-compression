@@ -106,6 +106,7 @@ All options are validated when `compression()` is called — invalid levels (e.g
 | `gzip` | `level` | 0–9 | 6 |
 | `brotli` | `quality` | 0–11 | 11 |
 | `brotli` | `windowBits` | 10–24 | 22 |
+| `brotli` | `sectionSize` | ≥ 1 (bytes) | 1 MiB |
 | `zstd` | `level` | 1–22 | 19 |
 
 ```ts
@@ -113,6 +114,8 @@ defineAlgorithm('gzip', { level: 9 })
 defineAlgorithm('brotli', { quality: 7, windowBits: 22 })
 defineAlgorithm('zstd', { level: 12 })
 ```
+
+`sectionSize` is the target number of bytes each brotli worker thread compresses when a large input is split across the native worker pool; inputs at least twice `sectionSize` take the multithreaded path. Smaller sections finish large files faster at a slight cost in compression ratio — sections much smaller than the window (`2^windowBits` bytes) lose too many cross-section matches.
 
 ## How it works
 

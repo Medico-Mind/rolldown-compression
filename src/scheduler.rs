@@ -14,6 +14,7 @@ pub struct BatchItem<'a> {
     pub algorithm: Algorithm,
     pub level: u32,
     pub window_bits: Option<u32>,
+    pub section_size: Option<u32>,
     pub input: &'a [u8],
 }
 
@@ -95,7 +96,13 @@ fn estimated_cost(item: &BatchItem<'_>) -> u64 {
 
 fn run_one(item: &BatchItem<'_>, skip_if_larger_or_equal: bool) -> BatchOutcome {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        compress(item.algorithm, item.level, item.window_bits, item.input)
+        compress(
+            item.algorithm,
+            item.level,
+            item.window_bits,
+            item.section_size,
+            item.input,
+        )
     }))
     .unwrap_or_else(|_| {
         Err(format!(
@@ -149,6 +156,7 @@ mod tests {
                     algorithm,
                     level: algorithm.default_level(),
                     window_bits: None,
+                    section_size: None,
                     input,
                 }
             })
@@ -191,6 +199,7 @@ mod tests {
             algorithm: Algorithm::Gzip,
             level: 6,
             window_bits: None,
+            section_size: None,
             input: &input,
         }];
         let outcomes = run_batch(&items, 0, true);
@@ -211,6 +220,7 @@ mod tests {
                 algorithm: Algorithm::Gzip,
                 level: 6,
                 window_bits: None,
+                section_size: None,
                 input: &good,
             },
             BatchItem {
@@ -219,6 +229,7 @@ mod tests {
                 algorithm: Algorithm::Zstd,
                 level: 99,
                 window_bits: None,
+                section_size: None,
                 input: &good,
             },
         ];

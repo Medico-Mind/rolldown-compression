@@ -27,10 +27,17 @@ export interface GzipOptions {
   level?: number
 }
 
-/** Brotli options. `quality`: 0-11, default 11. `windowBits`: 10-24, default 22. */
+/**
+ * Brotli options. `quality`: 0-11, default 11. `windowBits`: 10-24, default 22.
+ * `sectionSize`: target bytes per worker thread when large inputs are split
+ * across the native brotli worker pool; inputs at least twice this size take
+ * the multithreaded path. Default 1 MiB. Smaller sections finish large files
+ * faster at a slight cost in compression ratio.
+ */
 export interface BrotliOptions {
   quality?: number
   windowBits?: number
+  sectionSize?: number
 }
 
 /** Zstandard options. `level`: 1-22, default 19. */
@@ -127,6 +134,7 @@ export interface ResolvedAlgorithm {
   algorithm: CanonicalAlgorithm
   level: number
   windowBits?: number
+  sectionSize?: number
   extension: string
 }
 
@@ -235,12 +243,16 @@ function validateAlgorithmOptions(
   options: GzipOptions | BrotliOptions | ZstdOptions,
 ): void {
   if (algorithm === 'brotli') {
-    const { quality, windowBits } = options as BrotliOptions
+    const { quality, windowBits, sectionSize } = options as BrotliOptions
     if (quality !== undefined) {
       assertIntegerInRange(quality, LEVEL_RANGES.brotli, 'brotli quality')
     }
     if (windowBits !== undefined) {
       assertIntegerInRange(windowBits, [10, 24], 'brotli windowBits')
+    }
+    if (sectionSize !== undefined) {
+      // Upper bound: the native module takes the size as a u32.
+      assertIntegerInRange(sectionSize, [1, 4294967295], 'brotli sectionSize')
     }
     return
   }
@@ -265,9 +277,12 @@ function resolveAlgorithm(entry: AlgorithmName | DefineAlgorithmResult): Resolve
     extension: EXTENSIONS[algorithm],
   }
   if (algorithm === 'brotli') {
-    const { windowBits } = options as BrotliOptions
+    const { windowBits, sectionSize } = options as BrotliOptions
     if (windowBits !== undefined) {
       resolved.windowBits = windowBits
+    }
+    if (sectionSize !== undefined) {
+      resolved.sectionSize = sectionSize
     }
   }
   return resolved

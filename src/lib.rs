@@ -11,7 +11,7 @@ mod binding {
     use napi::bindgen_prelude::*;
     use napi_derive::napi;
 
-    use crate::compress::{Algorithm, validate_window_bits};
+    use crate::compress::{Algorithm, validate_section_size, validate_window_bits};
     use crate::scheduler::{BatchItem, BatchOutcome, run_batch};
 
     /// One compression task: pairs with the buffer at the same index in the
@@ -26,6 +26,10 @@ mod binding {
         pub level: Option<u32>,
         /// Brotli only: log2 window size (10-24, default 22).
         pub window_bits: Option<u32>,
+        /// Brotli only: target section size in bytes per worker thread when
+        /// large inputs are split across the brotli worker pool; inputs at
+        /// least twice this size take the multithreaded path (default 1 MiB).
+        pub section_size: Option<u32>,
     }
 
     /// Batch-wide options for [`compress_buffers`].
@@ -59,6 +63,7 @@ mod binding {
         algorithm: Algorithm,
         level: u32,
         window_bits: Option<u32>,
+        section_size: Option<u32>,
     }
 
     pub struct CompressWorker {
@@ -89,6 +94,7 @@ mod binding {
                     algorithm: task.algorithm,
                     level: task.level,
                     window_bits: task.window_bits,
+                    section_size: task.section_size,
                     input: buffer.as_ref(),
                 })
                 .collect();
@@ -165,17 +171,22 @@ mod binding {
             algorithm
                 .validate_level(level)
                 .map_err(|err| Error::new(Status::InvalidArg, err))?;
-            if algorithm == Algorithm::Brotli
-                && let Some(window_bits) = task.window_bits
-            {
-                validate_window_bits(window_bits)
-                    .map_err(|err| Error::new(Status::InvalidArg, err))?;
+            if algorithm == Algorithm::Brotli {
+                if let Some(window_bits) = task.window_bits {
+                    validate_window_bits(window_bits)
+                        .map_err(|err| Error::new(Status::InvalidArg, err))?;
+                }
+                if let Some(section_size) = task.section_size {
+                    validate_section_size(section_size)
+                        .map_err(|err| Error::new(Status::InvalidArg, err))?;
+                }
             }
             parsed.push(ParsedTask {
                 file_name: task.file_name,
                 algorithm,
                 level,
                 window_bits: task.window_bits,
+                section_size: task.section_size,
             });
         }
 
