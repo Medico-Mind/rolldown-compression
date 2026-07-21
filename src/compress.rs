@@ -9,7 +9,8 @@ use std::io::Write;
 use brotli::enc::threading::{Owned, SendAlloc};
 use brotli::enc::{
     BrotliEncoderMaxCompressedSize, BrotliEncoderMaxCompressedSizeMulti, BrotliEncoderParams,
-    SliceWrapper, StandardAlloc, UnionHasher,
+    CompressionThreadResult, SliceWrapper, StandardAlloc, UnionHasher, WorkerPool,
+    compress_worker_pool, new_work_pool,
 };
 
 /// Supported compression algorithms.
@@ -23,14 +24,15 @@ pub enum Algorithm {
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
-/// Inputs at least this large are compressed with a multi-threaded brotli
-/// job; below it a cross-file rayon batch already keeps all cores busy and
-/// splitting would only cost ratio.
+/// Inputs at least this large are split into multiple sections on the global
+/// brotli worker pool; below it a cross-file rayon batch already keeps all
+/// cores busy and splitting would only cost ratio.
 const BROTLI_MULTI_THRESHOLD: usize = 2 * 1024 * 1024;
 /// Target section size per brotli worker thread. Sections much smaller than
 /// the window lose too many cross-section matches.
 const BROTLI_MULTI_SECTION: usize = 1024 * 1024;
-const BROTLI_MULTI_MAX_THREADS: usize = 4;
+const BROTLI_MIN_THREADS: usize = 2;
+const BROTLI_MAX_THREADS: usize = 4;
 
 impl Algorithm {
     /// Parse a canonical algorithm name coming over the FFI boundary.
@@ -133,6 +135,42 @@ fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|err| format!("gzip compression failed: {err}"))
 }
 
+/// Owned input for `compress_worker_pool`, which shares the buffer across
+/// worker threads and therefore cannot borrow it.
+struct HeapSlice(Vec<u8>);
+
+impl SliceWrapper<u8> for HeapSlice {
+    fn slice(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+type BrotliWorkerPool = WorkerPool<
+    CompressionThreadResult<StandardAlloc>,
+    UnionHasher<StandardAlloc>,
+    StandardAlloc,
+    (HeapSlice, BrotliEncoderParams),
+>;
+
+thread_local! {
+    /// Process-wide brotli worker pool plus the section budget it was sized for.
+    static BROTLI_WORKER_POOL: RefCell<BrotliWorkerPool> = {
+         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+        // The calling thread compresses the last section itself, so a budget
+        // of `threads` sections needs only `threads - 1` pool workers.
+        RefCell::new(new_work_pool(threads.saturating_sub(1)))
+    };
+}
+
+/// Compress large inputs by splitting them into ~[`BROTLI_MULTI_SECTION`]
+/// sections spread over the global worker pool; smaller inputs stay in one
+/// section on the calling thread.
+///
+/// The section count depends on the pool's thread budget, so output bytes for
+/// inputs past [`BROTLI_MULTI_THRESHOLD`] are stable within a process but may
+/// differ across machines or `concurrency` settings. Sectioning costs a
+/// fraction of a percent of ratio versus a single stream, in exchange for
+/// finishing the large files that dominate a batch tail several times faster.
 fn compress_brotli(quality: u32, window_bits: u32, input: &[u8]) -> Result<Vec<u8>, String> {
     let params = BrotliEncoderParams {
         quality: quality as i32,
@@ -140,8 +178,10 @@ fn compress_brotli(quality: u32, window_bits: u32, input: &[u8]) -> Result<Vec<u
         size_hint: input.len(),
         ..Default::default()
     };
-    if input.len() >= BROTLI_MULTI_THRESHOLD {
-        compress_brotli_multi(&params, input)
+    if input.len() > BROTLI_MULTI_THRESHOLD {
+        let num_sections = (input.len() / BROTLI_MULTI_SECTION).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+        BROTLI_WORKER_POOL
+            .with_borrow_mut(|pool| compress_brotli_pooled(&params, num_sections, pool, input))
     } else {
         compress_brotli_single(&params, input)
     }
@@ -155,53 +195,39 @@ fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<
     Ok(output)
 }
 
-/// Owned input for `compress_multi`, which shares the buffer across worker
-/// threads and therefore cannot borrow it.
-struct HeapSlice(Vec<u8>);
-
-impl SliceWrapper<u8> for HeapSlice {
-    fn slice(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-/// Compress one large input on several threads by splitting it into
-/// ~[`BROTLI_MULTI_SECTION`] sections.
-///
-/// The thread count is a pure function of the input size, never of batch
-/// concurrency, so a given (input, level, window) always produces identical
-/// bytes. Sectioning costs a fraction of a percent of ratio versus a single
-/// stream, in exchange for finishing the large files that dominate a batch
-/// tail several times faster.
-fn compress_brotli_multi(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
-    let num_threads = (input.len() / BROTLI_MULTI_SECTION).clamp(2, BROTLI_MULTI_MAX_THREADS);
-    let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input.len(), num_threads)];
-    let mut alloc_per_thread: Vec<_> = (0..num_threads)
+fn compress_brotli_pooled(
+    params: &BrotliEncoderParams,
+    num_sections: usize,
+    pool: &mut BrotliWorkerPool,
+    input: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input.len(), num_sections)];
+    let mut alloc_per_thread: Vec<_> = (0..num_sections)
         .map(|_| SendAlloc::new(StandardAlloc::default(), UnionHasher::Uninit))
         .collect();
-    let written = brotli::enc::compress_multi(
+    let written = compress_worker_pool(
         params,
         &mut Owned::new(HeapSlice(input.to_vec())),
         &mut output,
         &mut alloc_per_thread,
+        pool,
     )
     .map_err(|err| format!("brotli compression failed: {err:?}"))?;
     output.truncate(written);
     Ok(output)
 }
 
+// A zstd context at the levels used here owns tens of megabytes of match
+// tables; keeping one per worker thread avoids reallocating them for
+// every file. `i32::MIN` marks a fresh context whose level is not yet
+// configured (validated levels are all above it).
+thread_local! {
+    static ZSTD_CONTEXT: RefCell<(i32, zstd::bulk::Compressor<'static>)> =
+        RefCell::new((i32::MIN, zstd::bulk::Compressor::default()));
+}
+
 fn compress_zstd(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
-    // A zstd context at the levels used here owns tens of megabytes of match
-    // tables; keeping one per worker thread avoids reallocating them for
-    // every file. `i32::MIN` marks a fresh context whose level is not yet
-    // configured (validated levels are all above it).
-    thread_local! {
-        static CONTEXT: RefCell<(i32, zstd::bulk::Compressor<'static>)> =
-            RefCell::new((i32::MIN, zstd::bulk::Compressor::default()));
-    }
-    CONTEXT.with(|cell| {
-        let mut entry = cell.borrow_mut();
-        let (current_level, compressor) = &mut *entry;
+    ZSTD_CONTEXT.with_borrow_mut(|(current_level, compressor)| {
         let level = level as i32;
         if *current_level != level {
             compressor
@@ -314,7 +340,7 @@ mod tests {
 
     #[test]
     fn round_trips_large_brotli_inputs_via_multithreaded_path() {
-        // Sized to cross BROTLI_MULTI_THRESHOLD and exercise compress_multi.
+        // Sized to cross BROTLI_MULTI_THRESHOLD and exercise the worker pool.
         // Moderate qualities keep the debug-build test runtime reasonable;
         // the sectioning machinery is identical at every quality.
         let compressible = b"export const value = 42; // padding padding\n".repeat(52_000);
@@ -329,6 +355,27 @@ mod tests {
         let incompressible = pseudo_random(BROTLI_MULTI_THRESHOLD + 12_345);
         let compressed = compress(Algorithm::Brotli, 9, None, &incompressible).expect("compress");
         assert_eq!(decompress(Algorithm::Brotli, &compressed), incompressible);
+    }
+
+    #[test]
+    fn worker_pool_round_trips_multi_section_inputs() {
+        // The global pool's section budget depends on which test initializes
+        // it first, so pin a dedicated pool to guarantee multi-section
+        // coverage: 4 sections need 3 pool workers plus the calling thread.
+        let input = b"export const value = 42; // padding padding\n".repeat(104_000);
+        let num_sections = input.len() / BROTLI_MULTI_SECTION;
+        assert!(num_sections >= 4);
+        let params = BrotliEncoderParams {
+            quality: 5,
+            lgwin: BROTLI_DEFAULT_WINDOW_BITS as i32,
+            size_hint: input.len(),
+            ..Default::default()
+        };
+        let mut pool = new_work_pool(num_sections - 1);
+        let compressed =
+            compress_brotli_pooled(&params, num_sections, &mut pool, &input).expect("compress");
+        assert!(compressed.len() < input.len());
+        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
 
     #[test]
