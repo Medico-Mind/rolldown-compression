@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 1.1.0
+
+### Minor Changes
+
+- [`1d98d99`](https://github.com/Medico-Mind/rolldown-compression/commit/1d98d995567280c60194451818c7caffb7808bc6) Thanks [@Mnwa](https://github.com/Mnwa)! - Add `stream` option: compress from disk in `writeBundle` (order `post`) instead of in memory in `generateBundle`. Files are read on demand in bounded batches (`chunkSize` source bytes per batch, or 4 MB when `chunkSize` is 0), so the whole build is never buffered by the plugin and assets written to disk by other plugins' `writeBundle` hooks are compressed as well — removing the previous `generateBundle`-only limitation.
+
 ## 1.0.1
 
 ### Patch Changes
