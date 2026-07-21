@@ -5,12 +5,12 @@
 
 #[cfg(not(windows))]
 use brotli::enc::threading::{Owned, SendAlloc};
+use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
 #[cfg(not(windows))]
 use brotli::enc::{
     BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
     UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
 };
-use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
 use std::cell::RefCell;
 use std::io::Write;
 
