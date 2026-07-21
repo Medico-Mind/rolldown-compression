@@ -3,15 +3,16 @@
 //! Pure Rust module with no napi dependency so it can be unit tested with
 //! plain `cargo test`.
 
+#[cfg(not(windows))]
 use brotli::enc::threading::{Owned, SendAlloc};
+#[cfg(not(windows))]
 use brotli::enc::{
-    BrotliEncoderMaxCompressedSize, BrotliEncoderMaxCompressedSizeMulti, BrotliEncoderParams,
-    CompressionThreadResult, SliceWrapper, StandardAlloc, UnionHasher, WorkerPool,
-    compress_worker_pool, new_work_pool,
+    BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
+    UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
 };
+use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
 use std::cell::RefCell;
 use std::io::Write;
-use std::sync::Mutex;
 
 /// Supported compression algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,9 @@ pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 /// Default target section size per brotli worker thread. Sections much
 /// smaller than the window lose too many cross-section matches.
 pub const BROTLI_DEFAULT_SECTION_SIZE: u32 = 1024 * 1024;
+#[cfg(not(windows))]
 const BROTLI_MIN_THREADS: usize = 2;
+#[cfg(not(windows))]
 const BROTLI_MAX_THREADS: usize = 4;
 
 impl Algorithm {
@@ -147,14 +150,17 @@ fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Owned input for `compress_worker_pool`, which shares the buffer across
 /// worker threads and therefore cannot borrow it.
+#[cfg(not(windows))]
 struct HeapSlice(Vec<u8>);
 
+#[cfg(not(windows))]
 impl SliceWrapper<u8> for HeapSlice {
     fn slice(&self) -> &[u8] {
         &self.0
     }
 }
 
+#[cfg(not(windows))]
 type BrotliWorkerPool = WorkerPool<
     CompressionThreadResult<StandardAlloc>,
     UnionHasher<StandardAlloc>,
@@ -162,40 +168,24 @@ type BrotliWorkerPool = WorkerPool<
     (HeapSlice, BrotliEncoderParams),
 >;
 
-/// Process-wide cache of brotli worker pools. Each concurrent large-file job
-/// checks out its own pool so jobs never serialize behind one another; the
-/// mutex is held only for the pop/push, never during compression. Pools are
-/// never dropped from a thread-exit path — on Windows a TLS destructor holds
-/// the loader lock, and `WorkerPool::drop` joining its threads there
-/// deadlocks the process.
-static BROTLI_WORKER_POOLS: Mutex<Vec<BrotliWorkerPool>> = Mutex::new(Vec::new());
-
-fn with_brotli_pool<R>(f: impl FnOnce(&mut BrotliWorkerPool) -> R) -> R {
-    let checked_out = BROTLI_WORKER_POOLS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .pop();
-    let mut pool = checked_out.unwrap_or_else(|| {
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+#[cfg(not(windows))]
+thread_local! {
+    /// Per-worker-thread brotli pool plus the section budget it was sized
+    /// for. Not available on Windows: `WorkerPool::drop` joins its threads,
+    /// and a `thread_local` is dropped in a TLS destructor, which on Windows
+    /// runs under the loader lock — the joined thread cannot exit without
+    /// that same lock, deadlocking the process (rust-lang/rust#74875).
+    static BROTLI_WORKER_POOL: RefCell<BrotliWorkerPool> = {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
         // The calling thread compresses the last section itself, so a budget
         // of `threads` sections needs only `threads - 1` pool workers.
-        new_work_pool(threads.saturating_sub(1))
-    });
-    let result = f(&mut pool);
-    // If `f` unwinds the pool is dropped instead of returned; that join runs
-    // on a regular thread, not in a TLS destructor, so it cannot deadlock.
-    BROTLI_WORKER_POOLS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(pool);
-    result
+        RefCell::new(new_work_pool(threads.saturating_sub(1)))
+    };
 }
 
 /// Compress large inputs by splitting them into ~`section_size` sections
-/// spread over the global worker pool; smaller inputs stay in one section on
-/// the calling thread.
+/// spread over the per-thread worker pool; smaller inputs stay in one
+/// section on the calling thread.
 ///
 /// Inputs at least twice `section_size` are split; below that a cross-file
 /// rayon batch already keeps all cores busy and splitting would only cost
@@ -204,6 +194,12 @@ fn with_brotli_pool<R>(f: impl FnOnce(&mut BrotliWorkerPool) -> R) -> R {
 /// differ across machines or `concurrency` settings. Sectioning costs a
 /// fraction of a percent of ratio versus a single stream, in exchange for
 /// finishing the large files that dominate a batch tail several times faster.
+///
+/// On Windows every input is compressed single-threaded regardless of size:
+/// the sectioned path needs a persistent `thread_local` worker pool, and
+/// dropping one there deadlocks — TLS destructors run under the Windows
+/// loader lock, and `WorkerPool::drop` joins worker threads that cannot exit
+/// without that same lock (rust-lang/rust#74875).
 fn compress_brotli(
     quality: u32,
     window_bits: u32,
@@ -216,13 +212,16 @@ fn compress_brotli(
         size_hint: input.len(),
         ..Default::default()
     };
+    #[cfg(not(windows))]
     if input.len() >= 2 * section_size {
         let num_sections =
             (input.len() / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        with_brotli_pool(|pool| compress_brotli_pooled(&params, num_sections, pool, input))
-    } else {
-        compress_brotli_single(&params, input)
+        return BROTLI_WORKER_POOL
+            .with_borrow_mut(|pool| compress_brotli_pooled(&params, num_sections, pool, input));
     }
+    #[cfg(windows)]
+    let _ = section_size;
+    compress_brotli_single(&params, input)
 }
 
 fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
@@ -233,6 +232,7 @@ fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<
     Ok(output)
 }
 
+#[cfg(not(windows))]
 fn compress_brotli_pooled(
     params: &BrotliEncoderParams,
     num_sections: usize,
@@ -402,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn worker_pool_round_trips_multi_section_inputs() {
         // The global pool's section budget depends on which test initializes
         // it first, so pin a dedicated pool to guarantee multi-section
