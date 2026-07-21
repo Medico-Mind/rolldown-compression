@@ -1,5 +1,15 @@
 # @medicomind/rolldown-compression
 
+## 1.2.0
+
+### Minor Changes
+
+- [`31fcbe3`](https://github.com/Medico-Mind/rolldown-compression/commit/31fcbe3c3155e9d0e08b5474e184c0d34fe3ddfe) Thanks [@Mnwa](https://github.com/Mnwa)! - Move section size brotli to plugin config
+
+### Patch Changes
+
+- [`8788204`](https://github.com/Medico-Mind/rolldown-compression/commit/8788204ada0ba014d536b122aed787b7317cdda4) Thanks [@Mnwa](https://github.com/Mnwa)! - Reuse brotli thread pool for big files
+
 ## 1.1.0
 
 ### Minor Changes
