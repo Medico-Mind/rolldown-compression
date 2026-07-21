@@ -57,6 +57,7 @@ compression({
   skipIfLargerOrEqual: true,
   concurrency: 0, // 0 = number of logical CPUs
   chunkSize: 0, // 0 = compress everything in one batch
+  stream: false, // true = on-demand disk-based compression in writeBundle
   logLevel: 'info',
 })
 ```
@@ -91,7 +92,8 @@ export default defineConfig({
 | `deleteOriginalAssets` | `boolean` | `false` | Remove the original from the bundle after all algorithms processed it. Errors if `filename` resolves to the source name. |
 | `skipIfLargerOrEqual` | `boolean` | `true` | Don't emit artifacts whose compressed size is `>=` the original. |
 | `concurrency` | `number` | `0` | Native worker threads. `0` = number of logical CPUs. |
-| `chunkSize` | `number` | `0` | Max source bytes buffered per native compression batch. `0` = one batch for the whole build. A positive value (e.g. `64 * 1024 * 1024`) caps the plugin's peak memory overhead at roughly one batch of source copies plus its compressed outputs; a single file larger than `chunkSize` still forms its own batch. The bundler keeps the original bundle in memory regardless. |
+| `chunkSize` | `number` | `0` | Max source bytes buffered per native compression batch. `0` = one batch for the whole build. A positive value (e.g. `64 * 1024 * 1024`) caps the plugin's peak memory overhead at roughly one batch of source copies plus its compressed outputs; a single file larger than `chunkSize` still forms its own batch. The bundler keeps the original bundle in memory regardless. In [stream mode](#stream-mode) `0` falls back to a 4 MB batch instead of one big batch. |
+| `stream` | `boolean` | `false` | Compress from disk in `writeBundle` (order `post`) instead of in memory in `generateBundle`: files are read on demand in bounded batches (`chunkSize` bytes, default 4 MB), and assets written to disk by other plugins' `writeBundle` hooks are compressed too (see [stream mode](#stream-mode)). |
 | `logLevel` | `'silent' \| 'error' \| 'warn' \| 'info'` | `'info'` | Plugin log verbosity; `info` prints a per-algorithm summary at build end. |
 | `enableInWatchMode` | `boolean` | `false` | The plugin is a no-op in watch/dev mode unless enabled (see [watch mode](#watch--dev-mode)). |
 
@@ -120,7 +122,23 @@ defineAlgorithm('zstd', { level: 12 })
 - A failing task never aborts the batch: per-task errors are aggregated and fail the build with one message.
 - Already-compressed artifacts (`.gz`, `.br`, `.zst` — ours or pre-existing) are never re-compressed, so chaining plugin instances can't produce `app.js.gz.br`.
 
-Limitation: assets written to disk by other plugins in `writeBundle`/`closeBundle` (i.e. after `generateBundle`) are not seen by this plugin. This matches how `vite-plugin-compression2` handles the in-bundle pass; a `writeBundle` fallback was deliberately left out to keep the pipeline zero-copy and single-pass. File an issue if you have a concrete case.
+Limitation of the default mode: assets written to disk by other plugins in `writeBundle`/`closeBundle` (i.e. after `generateBundle`) are not seen. This matches how `vite-plugin-compression2` handles the in-bundle pass. Set `stream: true` to remove it.
+
+### Stream mode
+
+With `stream: true` the plugin skips the in-memory `generateBundle` pass entirely and instead runs at the end of `writeBundle` (hook order `post`), after the bundle — and any extra assets other plugins wrote in their own `writeBundle` hooks — is on disk:
+
+```ts
+compression({
+  stream: true,
+  chunkSize: 64 * 1024 * 1024, // optional: batch by source bytes instead of by file count
+})
+```
+
+- The output directory is scanned recursively and matching files are read **on demand**, never all at once: a batch is flushed to the native module whenever it reaches `chunkSize` source bytes, defaulting to **4 MB** when `chunkSize` is `0`. Peak memory overhead is one batch of sources plus its compressed outputs, regardless of build size.
+- Compressed artifacts are written straight to the output directory (`emitFile` is not available after write); `deleteOriginalAssets` unlinks the originals from disk.
+- The same filter, threshold and re-compression guards apply, and everything already in the output directory that matches them is compressed — including files produced by other plugins after `generateBundle`, the default mode's limitation. Assets written in `closeBundle` (after all `writeBundle` hooks) are still not seen.
+- Trade-off: files the bundler already had in memory are re-read from disk, and per-batch FFI calls replace the single big batch — for small builds the default in-memory mode is faster.
 
 ### Watch / dev mode
 
@@ -254,7 +272,7 @@ the host, so on an unsupported platform the wasm package must be opted into:
 - **No tarball plugin**: out of scope.
 - **gzip default level is 6** (zlib default), not 9 — measurably faster for a ~1% size difference. Pass `defineAlgorithm('gzip', { level: 9 })` to match the reference.
 - **zstd everywhere**: zstd is compiled in, with no dependency on the Node runtime's zstd support (node >= 22.15).
-- Extra options: `concurrency` (native thread cap), `chunkSize` (memory cap per compression batch) and `enableInWatchMode`.
+- Extra options: `concurrency` (native thread cap), `chunkSize` (memory cap per compression batch), `stream` (on-demand disk-based compression in `writeBundle`) and `enableInWatchMode`.
 
 ## Implementation decisions
 

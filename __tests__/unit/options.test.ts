@@ -65,8 +65,14 @@ describe('resolveOptions', () => {
     expect(resolved.deleteOriginalAssets).toBe(false)
     expect(resolved.concurrency).toBe(0)
     expect(resolved.chunkSize).toBe(0)
+    expect(resolved.stream).toBe(false)
     expect(resolved.logLevel).toBe('info')
     expect(resolved.enableInWatchMode).toBe(false)
+  })
+
+  it('coerces stream to a boolean', () => {
+    expect(resolveOptions({ stream: true }).stream).toBe(true)
+    expect(resolveOptions({ stream: undefined }).stream).toBe(false)
   })
 
   it('normalizes string shorthands and defineAlgorithm entries', () => {

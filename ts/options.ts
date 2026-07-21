@@ -103,6 +103,16 @@ export interface CompressionOptions {
    * @default 0
    */
   chunkSize?: number
+  /**
+   * Compress from disk at the end of `writeBundle` instead of in memory in
+   * `generateBundle`. The output directory is scanned and files are read on
+   * demand in bounded batches (`chunkSize` source bytes per batch, or 4 MB
+   * per batch when `chunkSize` is 0), so the whole build is never held in
+   * memory and assets written to disk by other plugins' `writeBundle`
+   * hooks are picked up as well.
+   * @default false
+   */
+  stream?: boolean
   /** @default 'info' */
   logLevel?: LogLevel
   /**
@@ -130,6 +140,7 @@ export interface ResolvedOptions {
   skipIfLargerOrEqual: boolean
   concurrency: number
   chunkSize: number
+  stream: boolean
   logLevel: LogLevel
   enableInWatchMode: boolean
 }
@@ -296,6 +307,7 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
     skipIfLargerOrEqual = true,
     concurrency = 0,
     chunkSize = 0,
+    stream = false,
     logLevel = 'info',
     enableInWatchMode = false,
   } = options
@@ -338,6 +350,7 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
     skipIfLargerOrEqual: Boolean(skipIfLargerOrEqual),
     concurrency,
     chunkSize,
+    stream: Boolean(stream),
     logLevel,
     enableInWatchMode: Boolean(enableInWatchMode),
   }

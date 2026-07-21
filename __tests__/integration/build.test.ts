@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -166,5 +166,39 @@ describe('rolldown integration', () => {
     await expect(buildFixture({ algorithms: ['gzip'], filename: '[path][base]' })).rejects.toThrow(
       /same name/,
     )
+  })
+
+  it('stream mode compresses assets written to disk by other plugins in writeBundle', async () => {
+    const lateAssetPlugin: Plugin = {
+      name: 'test-late-asset',
+      async writeBundle(outputOptions) {
+        const dir = outputOptions.dir
+        if (dir === undefined) throw new Error('expected an output dir')
+        await writeFile(
+          path.join(dir, 'late.txt'),
+          'written after generateBundle, only visible on disk\n'.repeat(50),
+        )
+      },
+    }
+
+    const { outDir, files } = await buildFixture({ stream: true }, [lateAssetPlugin])
+
+    expect(files).toContain('main.js.gz')
+    expect(files).toContain('main.js.br')
+    expect(files).toContain('assets/data.json.gz')
+    // The removed limitation: a file another plugin wrote straight to disk
+    // in `writeBundle` gets compressed too.
+    expect(files).toContain('late.txt.gz')
+    expect(files).not.toContain('assets/noise.bin.gz')
+    expect(files).not.toContain('pretend.gz.gz')
+
+    const original = await readFile(path.join(outDir, 'main.js'))
+    const fromGzip = gunzipSync(await readFile(path.join(outDir, 'main.js.gz')))
+    const fromBrotli = brotliDecompressSync(await readFile(path.join(outDir, 'main.js.br')))
+    expect(fromGzip.equals(original)).toBe(true)
+    expect(fromBrotli.equals(original)).toBe(true)
+
+    const late = await readFile(path.join(outDir, 'late.txt'))
+    expect(gunzipSync(await readFile(path.join(outDir, 'late.txt.gz'))).equals(late)).toBe(true)
   })
 })
