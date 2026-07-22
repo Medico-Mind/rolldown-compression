@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 1.2.2
+
+### Patch Changes
+
+- [`c8748a1`](https://github.com/Medico-Mind/rolldown-compression/commit/c8748a126a5825390baec29dcd6bf2684158dc8a) Thanks [@Mnwa](https://github.com/Mnwa)! - Reuse napi buffers when process content
+
 ## 1.2.1
 
 ### Patch Changes
