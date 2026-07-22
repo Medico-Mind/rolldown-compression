@@ -1,21 +1,25 @@
 //! Parallel batch scheduling on top of rayon.
 //!
-//! Pure Rust module with no napi dependency so it can be unit tested with
-//! plain `cargo test`.
+//! Unit tested with plain `cargo test`: [`InputBuffer`] switches to
+//! `Vec<u8>` under test, so no Node-API symbols are referenced.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use rayon::prelude::*;
 
-use crate::compress::{Algorithm, compress};
+use crate::compress::{Algorithm, InputBuffer, compress};
 
 /// A single unit of compression work.
-pub struct BatchItem<'a> {
+///
+/// Owns its input so the scheduler can release each buffer as soon as its
+/// item finishes compressing instead of pinning the whole batch in memory
+/// until every item is done.
+pub struct BatchItem {
     pub algorithm: Algorithm,
     pub level: u32,
     pub window_bits: Option<u32>,
     pub section_size: Option<u32>,
-    pub input: &'a [u8],
+    pub input: InputBuffer,
 }
 
 /// The outcome of one [`BatchItem`].
@@ -42,7 +46,7 @@ pub struct BatchOutcome {
 /// A failure (or panic) of a single item never aborts the batch; it is
 /// reported through [`BatchOutcome::error`].
 pub fn run_batch(
-    items: &[BatchItem<'_>],
+    items: Vec<BatchItem>,
     concurrency: usize,
     skip_if_larger_or_equal: bool,
 ) -> Vec<BatchOutcome> {
@@ -60,24 +64,25 @@ pub fn run_batch(
     }
 }
 
-fn process_compress(items: &[BatchItem<'_>], skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
+fn process_compress(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
     let mut outcomes: Vec<BatchOutcome> = vec![Default::default(); items.len()];
 
-    let mut tasks: Vec<(usize, &mut BatchOutcome)> = outcomes.iter_mut().enumerate().collect();
+    let mut tasks: Vec<(BatchItem, &mut BatchOutcome)> =
+        items.into_iter().zip(outcomes.iter_mut()).collect();
 
-    tasks.par_sort_unstable_by_key(|&(i, _)| std::cmp::Reverse(estimated_cost(&items[i])));
+    tasks.par_sort_unstable_by_key(|(item, _)| std::cmp::Reverse(estimated_cost(item)));
 
     tasks
         .into_par_iter()
         .with_max_len(1)
-        .for_each(|(i, slot)| *slot = run_one(&items[i], skip_if_larger_or_equal));
+        .for_each(|(item, slot)| *slot = run_one(item, skip_if_larger_or_equal));
 
     outcomes
 }
 
 /// Rough relative CPU cost of an item, used only for scheduling order.
 /// Derived from measured per-byte throughput of each algorithm/level class.
-fn estimated_cost(item: &BatchItem<'_>) -> u64 {
+fn estimated_cost(item: &BatchItem) -> u64 {
     let weight = match item.algorithm {
         Algorithm::Gzip => 1 + u64::from(item.level) / 3,
         Algorithm::Brotli => match item.level {
@@ -94,7 +99,12 @@ fn estimated_cost(item: &BatchItem<'_>) -> u64 {
     item.input.len() as u64 * weight
 }
 
-fn run_one(item: &BatchItem<'_>, skip_if_larger_or_equal: bool) -> BatchOutcome {
+fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
+    let input_len = item.input.len();
+    let algorithm = item.algorithm;
+    // `compress` consumes the input and drops it as soon as compression
+    // finishes, releasing the buffer per item instead of holding the whole
+    // batch until the last item ends.
     let result = catch_unwind(AssertUnwindSafe(|| {
         compress(
             item.algorithm,
@@ -107,13 +117,13 @@ fn run_one(item: &BatchItem<'_>, skip_if_larger_or_equal: bool) -> BatchOutcome 
     .unwrap_or_else(|_| {
         Err(format!(
             "{} compression panicked unexpectedly",
-            item.algorithm.name()
+            algorithm.name()
         ))
     });
 
     match result {
         Ok(data) => {
-            if skip_if_larger_or_equal && data.len() >= item.input.len() {
+            if skip_if_larger_or_equal && data.len() >= input_len {
                 BatchOutcome {
                     data: Vec::new(),
                     skipped: true,
@@ -145,7 +155,7 @@ mod tests {
             .into_bytes()
     }
 
-    fn make_items(inputs: &[Vec<u8>]) -> Vec<BatchItem<'_>> {
+    fn make_items(inputs: &[Vec<u8>]) -> Vec<BatchItem> {
         let algorithms = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
         inputs
             .iter()
@@ -157,7 +167,7 @@ mod tests {
                     level: algorithm.default_level(),
                     window_bits: None,
                     section_size: None,
-                    input,
+                    input: input.clone(),
                 }
             })
             .collect()
@@ -166,9 +176,8 @@ mod tests {
     #[test]
     fn batch_preserves_input_order_and_succeeds() {
         let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
-        let items = make_items(&inputs);
-        let outcomes = run_batch(&items, 0, false);
-        assert_eq!(outcomes.len(), items.len());
+        let outcomes = run_batch(make_items(&inputs), 0, false);
+        assert_eq!(outcomes.len(), inputs.len());
         for outcome in &outcomes {
             assert!(outcome.error.is_none());
             assert!(!outcome.skipped);
@@ -179,11 +188,10 @@ mod tests {
     #[test]
     fn batch_is_deterministic_across_thread_counts() {
         let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
-        let items = make_items(&inputs);
 
-        let single = run_batch(&items, 1, false);
+        let single = run_batch(make_items(&inputs), 1, false);
         for threads in [2, 4, 8] {
-            let multi = run_batch(&items, threads, false);
+            let multi = run_batch(make_items(&inputs), threads, false);
             assert_eq!(single.len(), multi.len());
             for (a, b) in single.iter().zip(multi.iter()) {
                 assert_eq!(a.data, b.data, "output differs with {threads} threads");
@@ -195,19 +203,21 @@ mod tests {
     fn skip_if_larger_or_equal_marks_incompressible_items() {
         // 4 bytes of data always grow under any container format.
         let input = vec![1u8, 2, 3, 4];
-        let items = vec![BatchItem {
-            algorithm: Algorithm::Gzip,
-            level: 6,
-            window_bits: None,
-            section_size: None,
-            input: &input,
-        }];
-        let outcomes = run_batch(&items, 0, true);
+        let make_items = || {
+            vec![BatchItem {
+                algorithm: Algorithm::Gzip,
+                level: 6,
+                window_bits: None,
+                section_size: None,
+                input: input.clone(),
+            }]
+        };
+        let outcomes = run_batch(make_items(), 0, true);
         assert!(outcomes[0].skipped);
         assert!(outcomes[0].data.is_empty());
         assert!(outcomes[0].error.is_none());
 
-        let outcomes = run_batch(&items, 0, false);
+        let outcomes = run_batch(make_items(), 0, false);
         assert!(!outcomes[0].skipped);
         assert!(outcomes[0].data.len() > input.len());
     }
@@ -221,7 +231,7 @@ mod tests {
                 level: 6,
                 window_bits: None,
                 section_size: None,
-                input: &good,
+                input: good.clone(),
             },
             BatchItem {
                 // Invalid level sneaks past FFI validation only in theory,
@@ -230,10 +240,10 @@ mod tests {
                 level: 99,
                 window_bits: None,
                 section_size: None,
-                input: &good,
+                input: good.clone(),
             },
         ];
-        let outcomes = run_batch(&items, 0, false);
+        let outcomes = run_batch(items, 0, false);
         assert!(outcomes[0].error.is_none());
         assert!(!outcomes[0].data.is_empty());
         assert!(outcomes[1].error.is_some());

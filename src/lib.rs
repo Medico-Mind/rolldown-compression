@@ -86,30 +86,37 @@ mod binding {
         type JsValue = Vec<CompressResult>;
 
         fn compute(&mut self) -> Result<Self::Output> {
-            let items: Vec<BatchItem<'_>> = self
-                .tasks
+            let tasks = std::mem::take(&mut self.tasks);
+            let buffers = std::mem::take(&mut self.buffers);
+            let original_sizes: Vec<u32> =
+                buffers.iter().map(|buffer| buffer.len() as u32).collect();
+
+            // Each buffer is moved into its item so the scheduler drops the
+            // reference to the JS-side allocation as soon as that item is
+            // compressed, instead of pinning every input until the batch
+            // resolves on the event loop.
+            let items: Vec<BatchItem> = tasks
                 .iter()
-                .zip(self.buffers.iter())
+                .zip(buffers)
                 .map(|(task, buffer)| BatchItem {
                     algorithm: task.algorithm,
                     level: task.level,
                     window_bits: task.window_bits,
                     section_size: task.section_size,
-                    input: buffer.as_ref(),
+                    input: buffer,
                 })
                 .collect();
 
-            let outcomes = run_batch(&items, self.concurrency, self.skip_if_larger_or_equal);
+            let outcomes = run_batch(items, self.concurrency, self.skip_if_larger_or_equal);
 
-            Ok(self
-                .tasks
-                .iter()
-                .zip(self.buffers.iter())
+            Ok(tasks
+                .into_iter()
+                .zip(original_sizes)
                 .zip(outcomes)
-                .map(|((task, buffer), outcome)| WorkerOutcome {
-                    file_name: task.file_name.clone(),
+                .map(|((task, original_size), outcome)| WorkerOutcome {
+                    file_name: task.file_name,
                     algorithm: task.algorithm.name(),
-                    original_size: buffer.len() as u32,
+                    original_size,
                     outcome,
                 })
                 .collect())
