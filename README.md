@@ -8,9 +8,7 @@
 
 Fast, native compression plugin for [Rolldown](https://rolldown.rs) and [Vite 8+](#usage-with-vite): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
 
-**4x faster builds in a real project**: switching a production app from `node:zlib`-based compression to this plugin cut total build time from 4:34 to 1:08 (235% → 784% CPU utilization) — see [real-world results](#real-world-results).
-
-Since v0.3.3 we are using PGO and Bolt optimizations in our native binaries. It reduce around 5-10% build compression time in some cases (see benchmarks).
+**3x faster builds in a real project**: switching a production app from `node:zlib`-based (node v26.4.0) compression to this plugin cut total build time from 3:50 to 1:23 (294% → 688% CPU utilization) — see [real-world results](#real-world-results).
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
 
@@ -177,8 +175,8 @@ example.com {
 Switching a production app's build from `node:zlib`-based compression to this plugin (same algorithms and levels):
 
 ```
-before: npm run build  639.62s user 5.84s system 235% cpu 4:34.06 total
-after:  npm run build  527.60s user 5.23s system 784% cpu 1:07.95 total
+before: npm run build  675.82s user 4.63s system 294% cpu 3:50.92 total
+after:  npm run build  567.80s user 7.41s system 688% cpu 1:23.58 total
 ```
 
 **4.03x faster wall clock.** Compression stops being serialized behind the libuv thread pool (default `UV_THREADPOOL_SIZE=4`) and runs on all cores instead — CPU utilization jumps from 235% to 784%.
@@ -192,22 +190,22 @@ Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 #### With PGO
 | scenario                          | output  | native (rust) | node:zlib | speedup |
 |-----------------------------------|---------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 10.90s        | 15.55s    | 1.43x   |
-| gzip (level 9)                    | 5.51 MB | 0.09s         | 0.33s     | 3.61x   |
-| gzip (level 6)                    | 5.64 MB | 0.06s         | 0.16s     | 2.60x   |
-| brotli (quality 11)               | 3.21 MB | 9.74s         | 14.98s    | 1.54x   |
-| brotli (quality 6)                | 5.70 MB | 0.13s         | 0.16s     | 1.29x   |
-| zstd (level 19)                   | 3.28 MB | 2.32s         | 6.83s     | 2.94x   |
+| gzip+brotli (ref. defaults: 9/11) | 8.70 MB | 8.65s         | 15.00s    | 1.73x   |
+| gzip (level 9)                    | 5.51 MB | 0.09s         | 0.33s     | 3.72x   |
+| gzip (level 6)                    | 5.64 MB | 0.06s         | 0.15s     | 2.54x   |
+| brotli (quality 11)               | 3.20 MB | 8.39s         | 14.73s    | 1.76x   |
+| brotli (quality 6)                | 5.69 MB | 0.11s         | 0.16s     | 1.48x   |
+| zstd (level 19)                   | 3.28 MB | 2.42s         | 6.40s     | 2.65x   |
 
 #### Without PGO
 | scenario                          | output  | native (rust) | node:zlib | speedup |
 |-----------------------------------|---------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 8.71 MB | 10.41s        | 15.36s    | 1.48x   |
-| gzip (level 9)                    | 5.51 MB | 0.10s         | 0.34s     | 3.38x   |
-| gzip (level 6)                    | 5.64 MB | 0.07s         | 0.16s     | 2.17x   |
-| brotli (quality 11)               | 3.21 MB | 10.31s        | 15.00s    | 1.45x   |
-| brotli (quality 6)                | 5.70 MB | 0.13s         | 0.17s     | 1.28x   |
-| zstd (level 19)                   | 3.28 MB | 2.97s         | 6.95s     | 2.34x   |
+| gzip+brotli (ref. defaults: 9/11) | 8.70 MB | 8.23s         | 15.05s    | 1.83x   |
+| gzip (level 9)                    | 5.51 MB | 0.10s         | 0.33s     | 3.31x   |
+| gzip (level 6)                    | 5.64 MB | 0.05s         | 0.15s     | 3.00x   |
+| brotli (quality 11)               | 3.20 MB | 8.65s         | 14.76s    | 1.71x   |
+| brotli (quality 6)                | 5.69 MB | 0.12s         | 0.15s     | 1.32x   |
+| zstd (level 19)                   | 3.28 MB | 2.42s         | 6.28s     | 2.59x   |
 
 Reading these numbers honestly:
 
@@ -228,9 +226,9 @@ Reading these numbers honestly:
 
 `npm run bench:pgo` (or with `--quick`) then benchmarks baseline vs PGO(+BOLT) on the same dist-shaped fixtures as `npm run bench`, with interleaved iterations and median timings:
 
-| scenario | what it measures |
-| --- | --- |
-| baseline | plain `--release` (fat LTO, `codegen-units = 1`) |
+| scenario       | what it measures                                           |
+|----------------|------------------------------------------------------------|
+| baseline       | plain `--release` (fat LTO, `codegen-units = 1`)           |
 | pgo / pgo+bolt | same flags plus `-Cprofile-use` (and BOLT layout on Linux) |
 
 Expect modest gains: the baseline already ships fat LTO with `codegen-units = 1`, so PGO adds a few percent on the compression-heavy scenarios (~1.1x on the combined gzip+brotli run on an M1 Pro) and is within noise on sub-second ones. Sub-second scenario deltas in the table are measurement noise, not regressions.
@@ -241,14 +239,14 @@ The release workflow builds every published binary with PGO. Cross-compiled targ
 
 Prebuilt binaries are published for:
 
-| platform | triple |
-| --- | --- |
-| macOS arm64 | `aarch64-apple-darwin` |
-| macOS x64 | `x86_64-apple-darwin` |
-| Linux x64 (glibc) | `x86_64-unknown-linux-gnu` |
+| platform            | triple                      |
+|---------------------|-----------------------------|
+| macOS arm64         | `aarch64-apple-darwin`      |
+| macOS x64           | `x86_64-apple-darwin`       |
+| Linux x64 (glibc)   | `x86_64-unknown-linux-gnu`  |
 | Linux arm64 (glibc) | `aarch64-unknown-linux-gnu` |
-| Linux x64 (musl) | `x86_64-unknown-linux-musl` |
-| Windows x64 | `x86_64-pc-windows-msvc` |
+| Linux x64 (musl)    | `x86_64-unknown-linux-musl` |
+| Windows x64         | `x86_64-pc-windows-msvc`    |
 
 Node.js >= 22.14.0 (since v2; v1.x supports Node.js >= 18).
 
