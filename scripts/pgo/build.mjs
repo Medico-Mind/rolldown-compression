@@ -18,6 +18,15 @@
  *
  * Usage: node scripts/pgo/build.mjs [options]
  *   --no-bolt           skip the BOLT pass even on Linux
+ *   --c-pgo             extend PGO to the cc-rs-built C dependencies
+ *                       (zstd-sys, libmimalloc-sys) via clang
+ *                       -fprofile-generate/-use. Requires the C compiler
+ *                       (TARGET_CC/CC) to be a non-Apple clang with the same
+ *                       LLVM major as rustc — the instrumented C code shares
+ *                       rustc's profiling runtime and .profraw files, and the
+ *                       raw profile format is not stable across majors.
+ *                       Anything else downgrades to Rust-only PGO with a
+ *                       warning instead of failing.
  *   --skip-baseline     skip the baseline build (CI: only the PGO binary matters)
  *   --napi-args "..."   extra args for `napi build` (e.g. "--target <triple> --use-napi-cross")
  *   --train "..."       shell command that runs the training workload against the
@@ -50,6 +59,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 napiArgs = napiArgs.filter(Boolean)
 const noBolt = flags.has('--no-bolt')
+const cPgoWanted = flags.has('--c-pgo')
 const skipBaseline = flags.has('--skip-baseline')
 
 const baseRustflags = process.env.RUSTFLAGS ?? ''
@@ -137,6 +147,53 @@ function train(bindingPath, extraEnv = {}) {
   run('node', [path.join('scripts', 'pgo', 'train.mjs'), relative], extraEnv)
 }
 
+/** See --c-pgo in the header comment for why the majors must match. */
+function cPgoSupported() {
+  // TARGET_CC first: on cross builds cc-rs prefers it over CC, and on host
+  // builds it ignores TARGET_CC — but the CI jobs that cross-compile set
+  // both to the same clang, so the probe stays accurate either way.
+  const cc = process.env.TARGET_CC || process.env.CC || 'cc'
+  const probe = spawnSync(cc, ['--version'], { encoding: 'utf8' })
+  if (probe.error || probe.status !== 0) {
+    console.warn(`--c-pgo: cannot run \`${cc} --version\`; C deps build without PGO`)
+    return false
+  }
+  if (/\bApple\b/.test(probe.stdout)) {
+    console.warn(
+      `--c-pgo: ${cc} is Apple clang, whose LLVM fork does not track upstream majors; C deps build without PGO`,
+    )
+    return false
+  }
+  const clangMajor = /\bclang version (\d+)/.exec(probe.stdout)?.[1]
+  const llvmMajor = /^LLVM version: (\d+)/m.exec(
+    execFileSync('rustc', ['-vV'], { encoding: 'utf8' }),
+  )?.[1]
+  if (!clangMajor || clangMajor !== llvmMajor) {
+    console.warn(
+      `--c-pgo: ${cc} (${clangMajor ? `clang ${clangMajor}` : 'not clang'}) does not match rustc's LLVM ${llvmMajor}; C deps build without PGO`,
+    )
+    return false
+  }
+  console.log(`--c-pgo: C dependencies build with clang ${clangMajor} PGO`)
+  return true
+}
+
+const cPgo = cPgoWanted && cPgoSupported()
+
+/**
+ * Append a PGO flag to every CFLAGS variant cc-rs may consult, so it takes
+ * effect both on host builds (CFLAGS) and napi-cross builds (TARGET_CFLAGS,
+ * which the napi CLI extends with the cross sysroot rather than replacing).
+ */
+function cPgoEnv(flag) {
+  if (!cPgo) return {}
+  const env = {}
+  for (const name of ['CFLAGS', 'CXXFLAGS', 'TARGET_CFLAGS', 'TARGET_CXXFLAGS']) {
+    env[name] = `${process.env[name] ?? ''} ${flag}`.trim()
+  }
+  return env
+}
+
 const llvmProfdata = findRustcLlvmTool('llvm-profdata')
 if (!llvmProfdata) {
   console.error(
@@ -157,7 +214,10 @@ if (skipBaseline) {
 }
 
 log('step 2/5: instrumented build (-Cprofile-generate)')
-const instrumented = napiBuild(`-Cprofile-generate=${profilesDir}`)
+const instrumented = napiBuild(
+  `-Cprofile-generate=${profilesDir}`,
+  cPgoEnv(`-fprofile-generate=${profilesDir}`),
+)
 fs.copyFileSync(instrumented, path.join(pgoDir, 'instrumented.node'))
 
 log('step 3/5: training run')
@@ -177,9 +237,13 @@ const boltTool = wantBolt ? findOnPath('llvm-bolt') : null
 const mergeFdata = wantBolt ? findOnPath('merge-fdata') : null
 const runBolt = wantBolt && boltTool && mergeFdata
 
+const cUseEnv = cPgoEnv(`-fprofile-use=${mergedProfile}`)
 const optimized = runBolt
-  ? napiBuild(`${pgoFlags} -Clink-arg=-Wl,--emit-relocs`, { CARGO_PROFILE_RELEASE_STRIP: 'none' })
-  : napiBuild(pgoFlags)
+  ? napiBuild(`${pgoFlags} -Clink-arg=-Wl,--emit-relocs`, {
+      CARGO_PROFILE_RELEASE_STRIP: 'none',
+      ...cUseEnv,
+    })
+  : napiBuild(pgoFlags, cUseEnv)
 fs.copyFileSync(optimized, path.join(pgoDir, 'pgo.node'))
 
 if (runBolt) {

@@ -38,6 +38,19 @@ jobs:
       matrix:
         # Every target builds with PGO (scripts/pgo/build.mjs): instrumented
         # build -> training run -> llvm-profdata merge -> optimized rebuild.
+        # The Linux targets pass --c-pgo so the C dependencies (zstd,
+        # mimalloc) are PGO'd too — possible only where the C compiler is a
+        # clang matching rustc's LLVM major, see the per-target comments.
+        # macOS ships Apple clang (an LLVM fork with incompatible profile
+        # data) and Windows builds C with MSVC, so C PGO stays Rust-only
+        # there.
+        # x64-linux-gnu additionally runs the BOLT post-link pass (bolt: true
+        # installs llvm-bolt); every other target passes --no-bolt — BOLT
+        # needs a Linux ELF binary that can be instrumented and trained on
+        # the build host, which rules out macOS/Windows/wasm (not ELF), the
+        # cross-compiled aarch64 binding (apt's llvm-bolt only ships the
+        # x86_64 instrumentation runtime), and musl (Alpine packages no
+        # llvm-bolt).
         # The instrumented binding has to execute to produce profiles, so
         # cross-compiled targets train through an emulation layer:
         # - x86_64-apple-darwin: x64 Node under Rosetta 2 (nodeArch: x64);
@@ -61,31 +74,48 @@ jobs:
               --napi-args="--target x86_64-apple-darwin"
           # linux gnu targets cross-compile with the napi-rs toolchain
           # (@napi-rs/cross-toolchain, cached under ~/.napi-rs).
+          # cpgo: the "Install clang matching rustc LLVM" step points CC at
+          # a clang whose major matches rustc's, so --c-pgo extends PGO to
+          # the C dependencies (host == target here, so cc-rs reads CC and
+          # ignores TARGET_CC). Linking stays on the napi-cross gcc against
+          # the glibc 2.17 sysroot.
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            bolt: true
+            cpgo: true
             build: >-
-              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              node scripts/pgo/build.mjs --skip-baseline --c-pgo
               --napi-args="--target x86_64-unknown-linux-gnu --use-napi-cross"
-          # TARGET_CC/TARGET_CXX=clang: the napi-cross gcc is 4.8.5
-          # (manylinux2014), which rejects libmimalloc-sys's unconditional
-          # -Wno-error=date-time (-Wdate-time needs gcc >= 4.9). With clang in
-          # TARGET_CC the napi CLI keeps it and adds the cross sysroot to
-          # TARGET_CFLAGS, so C sources build with the runner's clang against
-          # the glibc 2.17 sysroot while linking stays on the cross gcc. The
-          # x64-gnu job doesn't need this: host == target there, so cc-rs
-          # ignores TARGET_CC and uses the modern host compiler.
+          # C sources must build with clang, not the napi-cross gcc: that
+          # gcc is 4.8.5 (manylinux2014), which rejects libmimalloc-sys's
+          # unconditional -Wno-error=date-time (-Wdate-time needs gcc >=
+          # 4.9). The "Install clang matching rustc LLVM" step (cpgo) puts
+          # clang in TARGET_CC; the napi CLI keeps it and adds the cross
+          # sysroot to TARGET_CFLAGS, so C sources build with clang against
+          # the glibc 2.17 sysroot while linking stays on the cross gcc.
+          # Since the clang major matches rustc's, --c-pgo covers the C
+          # dependencies too (the instrumented binding trains fine under
+          # QEMU). BOLT stays off: the binding is aarch64 ELF but the
+          # runner is x86_64, and apt's llvm-bolt only ships the x86_64
+          # instrumentation runtime, so the binding can't be instrumented
+          # here.
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            cpgo: true
             build: >-
-              TARGET_CC=clang TARGET_CXX=clang++
-              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt --c-pgo
               --napi-args="--target aarch64-unknown-linux-gnu --use-napi-cross"
               --train="docker run --rm --platform linux/arm64 -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-slim node scripts/pgo/train.mjs {binding}"
           # musl builds (and trains) natively inside an Alpine container, so
           # no --train override is needed. rust:alpine + apk nodejs rather
           # than the napi-rs image, whose lts-alpine tag lags on Node 18
-          # (too old for @napi-rs/cli). build-base provides the C toolchain
-          # for zstd-sys, llvm-tools provides llvm-profdata.
+          # (too old for @napi-rs/cli). C sources build with clang, ideally
+          # the versioned clang<major> matching rustc's LLVM so --c-pgo can
+          # cover the C dependencies (falling back to Alpine's default
+          # clang, where build.mjs downgrades to Rust-only PGO if the
+          # majors disagree); build-base stays for musl-dev, binutils and
+          # the gcc link driver, llvm-tools provides llvm-profdata. BOLT
+          # stays off: Alpine packages no llvm-bolt.
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             build: >-
@@ -93,7 +123,11 @@ jobs:
               rust:alpine
               sh -c 'apk add --no-cache nodejs npm build-base &&
               rustup component add llvm-tools &&
-              node scripts/pgo/build.mjs --skip-baseline --no-bolt
+              MAJOR="$(rustc -vV | sed -n "s/^LLVM version: \([0-9]*\).*/\1/p")" &&
+              { apk add --no-cache "clang$MAJOR" || apk add --no-cache clang; } &&
+              export CC="$(command -v "clang-$MAJOR" || command -v clang)" &&
+              export CXX="$(command -v "clang++-$MAJOR" || command -v clang++)" &&
+              node scripts/pgo/build.mjs --skip-baseline --no-bolt --c-pgo
               --napi-args="--target x86_64-unknown-linux-musl"'
           - host: windows-latest
             target: x86_64-pc-windows-msvc
@@ -144,6 +178,35 @@ jobs:
         with:
           path: ~/.napi-rs
           key: napi-cross-${{ matrix.settings.target }}
+      # --c-pgo needs a clang whose major matches the LLVM inside rustc, so
+      # the instrumented C and Rust code share one profiling runtime and
+      # raw profile format. Ubuntu's clang usually lags rustc's LLVM, so
+      # install the matching major from apt.llvm.org; if it isn't published
+      # there yet, fall back to the distro clang and let build.mjs
+      # downgrade to Rust-only PGO. Exported as CC (read on host builds)
+      # and TARGET_CC (read on napi-cross builds).
+      - name: Install clang matching rustc LLVM (C PGO)
+        if: ${{ matrix.settings.cpgo }}
+        run: |
+          MAJOR="$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')"
+          if wget -qO "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh && sudo bash "$RUNNER_TEMP/llvm.sh" "$MAJOR"; then
+            CLANG="clang-$MAJOR"
+          else
+            echo "::warning::clang-$MAJOR unavailable from apt.llvm.org; using distro clang (C PGO may be skipped)"
+            CLANG=clang
+          fi
+          "$CLANG" --version
+          {
+            echo "CC=$CLANG"
+            echo "CXX=${CLANG/clang/clang++}"
+            echo "TARGET_CC=$CLANG"
+            echo "TARGET_CXX=${CLANG/clang/clang++}"
+          } >> "$GITHUB_ENV"
+      # Unversioned llvm-bolt + merge-fdata binaries, which is what
+      # scripts/pgo/build.mjs probes for on PATH.
+      - name: Install llvm-bolt (BOLT post-link pass)
+        if: ${{ matrix.settings.bolt }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends llvm-bolt
       - name: Set up QEMU (arm64 PGO training container)
         if: ${{ contains(matrix.settings.build, 'linux/arm64') }}
         uses: docker/setup-qemu-action@v3
