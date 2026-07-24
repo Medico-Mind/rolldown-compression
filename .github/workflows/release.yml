@@ -66,9 +66,18 @@ jobs:
             build: >-
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
               --napi-args="--target x86_64-unknown-linux-gnu --use-napi-cross"
+          # TARGET_CC/TARGET_CXX=clang: the napi-cross gcc is 4.8.5
+          # (manylinux2014), which rejects libmimalloc-sys's unconditional
+          # -Wno-error=date-time (-Wdate-time needs gcc >= 4.9). With clang in
+          # TARGET_CC the napi CLI keeps it and adds the cross sysroot to
+          # TARGET_CFLAGS, so C sources build with the runner's clang against
+          # the glibc 2.17 sysroot while linking stays on the cross gcc. The
+          # x64-gnu job doesn't need this: host == target there, so cc-rs
+          # ignores TARGET_CC and uses the modern host compiler.
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             build: >-
+              TARGET_CC=clang TARGET_CXX=clang++
               node scripts/pgo/build.mjs --skip-baseline --no-bolt
               --napi-args="--target aarch64-unknown-linux-gnu --use-napi-cross"
               --train="docker run --rm --platform linux/arm64 -v $PWD:$PWD -w $PWD -e LLVM_PROFILE_FILE node:26-slim node scripts/pgo/train.mjs {binding}"
