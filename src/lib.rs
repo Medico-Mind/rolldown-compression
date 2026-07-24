@@ -32,7 +32,8 @@ mod binding {
         pub window_bits: Option<u32>,
         /// Brotli only: target section size in bytes per worker thread when
         /// large inputs are split across the brotli worker pool; inputs at
-        /// least twice this size take the multithreaded path (default 1 MiB).
+        /// least four times this size take the multithreaded path
+        /// (default 4 MiB, i.e. multithreading from 16 MiB).
         pub section_size: Option<u32>,
     }
 

@@ -35,9 +35,13 @@ const forFiles = (files, variants) =>
     })),
   )
 
+const MB = 1024 * 1024
 const smallAndMedium = corpus.filter((file) => file.data.byteLength <= 128 * 1024)
 const medium = corpus.filter(
   (file) => file.data.byteLength > 8 * 1024 && file.data.byteLength <= 768 * 1024,
+)
+const vendorSized = corpus.filter(
+  (file) => file.data.byteLength >= 2 * MB && file.data.byteLength < 16 * MB,
 )
 const incompressible = corpus.filter((file) => !file.compressible)
 
@@ -71,6 +75,18 @@ const batches = [
     // the vendor-sized bundle (slow under instrumentation, but worth it).
     label: 'brotli max quality',
     jobs: forFiles(corpus, [{ algorithm: 'brotli', level: 11 }]),
+  },
+  {
+    // The worker-pool path starts at 4x sectionSize (16 MiB with the 4 MiB
+    // default). vendor-huge.js covers the default threshold in the batches
+    // above; a small sectionSize pushes the remaining vendor-sized payloads
+    // — including incompressible noise — through the same pool code without
+    // needing more 16 MiB+ fixtures.
+    label: 'brotli worker pool (custom sectionSize)',
+    jobs: forFiles(vendorSized, [
+      { algorithm: 'brotli', level: 6, sectionSize: 512 * 1024 },
+      { algorithm: 'brotli', level: 11, sectionSize: 512 * 1024 },
+    ]),
   },
   {
     label: 'brotli window variants',

@@ -37,9 +37,10 @@ pub enum Algorithm {
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
-/// Default target section size per brotli worker thread. Sections much
+/// Default target section size per brotli worker thread, matching the
+/// default window (`2^BROTLI_DEFAULT_WINDOW_BITS` bytes). Sections much
 /// smaller than the window lose too many cross-section matches.
-pub const BROTLI_DEFAULT_SECTION_SIZE: u32 = 1024 * 1024;
+pub const BROTLI_DEFAULT_SECTION_SIZE: u32 = 4 * 1024 * 1024;
 #[cfg(not(windows))]
 const BROTLI_MIN_THREADS: usize = 2;
 #[cfg(not(windows))]
@@ -205,9 +206,9 @@ thread_local! {
 /// spread over the per-thread worker pool; smaller inputs stay in one
 /// section on the calling thread.
 ///
-/// Inputs at least twice `section_size` are split; below that a cross-file
-/// rayon batch already keeps all cores busy and splitting would only cost
-/// ratio. The section count depends on the pool's thread budget, so output
+/// Inputs at least four times `section_size` are split (16 MiB at the
+/// default section size); below that a cross-file rayon batch already keeps
+/// all cores busy and splitting would only cost ratio. The section count depends on the pool's thread budget, so output
 /// bytes for inputs past that threshold are stable within a process but may
 /// differ across machines or `concurrency` settings. Sectioning costs a
 /// fraction of a percent of ratio versus a single stream, in exchange for
@@ -232,11 +233,17 @@ fn compress_brotli(
         ..Default::default()
     };
     #[cfg(not(windows))]
-    if input_len >= 2 * section_size {
+    if input_len >= 4 * section_size {
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        return BROTLI_WORKER_POOL.with_borrow_mut(|cell| match LazyCell::get_mut(cell) {
-            Some(pool) => compress_brotli_pooled(&params, num_sections, pool, SharedInput(input)),
-            None => compress_brotli_single(&params, input.as_ref()),
+        // `force_mut` spins the pool up on the first qualifying input; the
+        // threads persist for the rayon worker's lifetime after that.
+        return BROTLI_WORKER_POOL.with_borrow_mut(|cell| {
+            compress_brotli_pooled(
+                &params,
+                num_sections,
+                LazyCell::force_mut(cell),
+                SharedInput(input),
+            )
         });
     }
     #[cfg(windows)]
@@ -310,7 +317,7 @@ mod tests {
     /// Default section size and the multi-section threshold derived from it,
     /// mirroring the on-the-fly computation in `compress_brotli`.
     const DEFAULT_SECTION_SIZE: usize = BROTLI_DEFAULT_SECTION_SIZE as usize;
-    const DEFAULT_MULTI_THRESHOLD: usize = 2 * DEFAULT_SECTION_SIZE;
+    const DEFAULT_MULTI_THRESHOLD: usize = 4 * DEFAULT_SECTION_SIZE;
 
     fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {
         match algorithm {
@@ -425,7 +432,7 @@ mod tests {
         // Sized to cross DEFAULT_MULTI_THRESHOLD and exercise the worker pool.
         // Moderate qualities keep the debug-build test runtime reasonable;
         // the sectioning machinery is identical at every quality.
-        let compressible = b"export const value = 42; // padding padding\n".repeat(52_000);
+        let compressible = b"export const value = 42; // padding padding\n".repeat(382_000);
         assert!(compressible.len() >= DEFAULT_MULTI_THRESHOLD);
         for level in [5, 9] {
             let compressed = compress(Algorithm::Brotli, level, None, None, compressible.clone())
@@ -446,7 +453,7 @@ mod tests {
         // The global pool's section budget depends on which test initializes
         // it first, so pin a dedicated pool to guarantee multi-section
         // coverage: 4 sections need 3 pool workers plus the calling thread.
-        let input = b"export const value = 42; // padding padding\n".repeat(104_000);
+        let input = b"export const value = 42; // padding padding\n".repeat(382_000);
         let num_sections = input.len() / DEFAULT_SECTION_SIZE;
         assert!(num_sections >= 4);
         let params = BrotliEncoderParams {
@@ -464,8 +471,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn multithreaded_path_engages_for_large_inputs() {
+        // Sectioned output has different block boundaries than a single
+        // stream, so equality with the single-threaded encoder means the
+        // worker-pool path silently fell back (as a lazy-init bug once did).
+        let input = b"export const value = 42; // padding padding\n".repeat(382_000);
+        assert!(input.len() >= DEFAULT_MULTI_THRESHOLD);
+        let params = BrotliEncoderParams {
+            quality: 5,
+            lgwin: BROTLI_DEFAULT_WINDOW_BITS as i32,
+            size_hint: input.len(),
+            ..Default::default()
+        };
+        let single = compress_brotli_single(&params, input.as_ref()).expect("compress");
+        let compressed =
+            compress(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
+        assert_ne!(
+            compressed, single,
+            "large input should take the sectioned worker-pool path, not the single-stream encoder"
+        );
+        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
+    }
+
+    #[test]
     fn multithreaded_brotli_is_deterministic() {
-        let input = b"function chunk(a, b) { return a + b; }\n".repeat(58_000);
+        let input = b"function chunk(a, b) { return a + b; }\n".repeat(431_000);
         assert!(input.len() >= DEFAULT_MULTI_THRESHOLD);
         let first = compress(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
         let second = compress(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
@@ -530,7 +561,7 @@ mod tests {
         // that the default section size would compress single-threaded.
         let input = b"export const value = 42; // padding padding\n".repeat(24_000);
         let section_size = 256 * 1024_u32;
-        assert!(input.len() >= 2 * section_size as usize);
+        assert!(input.len() >= 4 * section_size as usize);
         assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
         let compressed = compress(
             Algorithm::Brotli,

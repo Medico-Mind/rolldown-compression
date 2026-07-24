@@ -104,7 +104,7 @@ All options are validated when `compression()` is called — invalid levels (e.g
 | `gzip` | `level` | 0–9 | 6 |
 | `brotli` | `quality` | 0–11 | 11 |
 | `brotli` | `windowBits` | 10–24 | 22 |
-| `brotli` | `sectionSize` | ≥ 1 (bytes) | 1 MiB |
+| `brotli` | `sectionSize` | ≥ 1 (bytes) | 4 MiB |
 | `zstd` | `level` | 1–22 | 19 |
 
 ```ts
@@ -113,7 +113,7 @@ defineAlgorithm('brotli', { quality: 7, windowBits: 22 })
 defineAlgorithm('zstd', { level: 12 })
 ```
 
-`sectionSize` is the target number of bytes each brotli worker thread compresses when a large input is split across the native worker pool; inputs at least twice `sectionSize` take the multithreaded path. Smaller sections finish large files faster at a slight cost in compression ratio — sections much smaller than the window (`2^windowBits` bytes) lose too many cross-section matches.
+`sectionSize` is the target number of bytes each brotli worker thread compresses when a large input is split across the native worker pool; inputs at least four times `sectionSize` take the multithreaded path (16 MiB at the default). Smaller sections finish large files faster at a slight cost in compression ratio — sections much smaller than the window (`2^windowBits` bytes) lose too many cross-section matches.
 
 ## How it works
 
@@ -183,34 +183,34 @@ after:  npm run build  567.80s user 7.41s system 688% cpu 1:23.58 total
 
 ### Synthetic benchmark
 
-`npm run bench` (or `node benchmark/index.mjs --quick`) generates a dist-shaped fixture set — 200 files / ~48 MB with a long-tail size distribution — and compresses it with the native core vs `node:zlib` driven at full parallelism via `Promise.all` (the reference plugin's best case). Both sides always use the same levels.
+`npm run bench` (or `node benchmark/index.mjs --quick`) generates a dist-shaped fixture set — 202 files / ~85 MB with a long-tail size distribution, including two monolithic >16 MiB bundles that exercise the multithreaded brotli path — and compresses it with the native core vs `node:zlib` driven at full parallelism via `Promise.all` (the reference plugin's best case). Both sides always use the same levels.
 
 Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 
 #### With PGO
-| scenario                          | output  | native (rust) | node:zlib | speedup |
-|-----------------------------------|---------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 8.70 MB | 8.65s         | 15.00s    | 1.73x   |
-| gzip (level 9)                    | 5.51 MB | 0.09s         | 0.33s     | 3.72x   |
-| gzip (level 6)                    | 5.64 MB | 0.06s         | 0.15s     | 2.54x   |
-| brotli (quality 11)               | 3.20 MB | 8.39s         | 14.73s    | 1.76x   |
-| brotli (quality 6)                | 5.69 MB | 0.11s         | 0.16s     | 1.48x   |
-| zstd (level 19)                   | 3.28 MB | 2.42s         | 6.40s     | 2.65x   |
+| scenario                          | output   | native (rust) | node:zlib | speedup |
+|-----------------------------------|----------|---------------|-----------|---------|
+| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 17.61s        | 36.74s    | 2.09x   |
+| gzip (level 9)                    | 9.62 MB  | 0.31s         | 0.80s     | 2.60x   |
+| gzip (level 6)                    | 9.86 MB  | 0.18s         | 0.37s     | 2.09x   |
+| brotli (quality 11)               | 5.45 MB  | 17.43s        | 36.65s    | 2.10x   |
+| brotli (quality 6)                | 9.88 MB  | 0.28s         | 0.40s     | 1.40x   |
+| zstd (level 19)                   | 5.54 MB  | 8.28s         | 14.35s    | 1.73x   |
 
 #### Without PGO
-| scenario                          | output  | native (rust) | node:zlib | speedup |
-|-----------------------------------|---------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 8.70 MB | 8.23s         | 15.05s    | 1.83x   |
-| gzip (level 9)                    | 5.51 MB | 0.10s         | 0.33s     | 3.31x   |
-| gzip (level 6)                    | 5.64 MB | 0.05s         | 0.15s     | 3.00x   |
-| brotli (quality 11)               | 3.20 MB | 8.65s         | 14.76s    | 1.71x   |
-| brotli (quality 6)                | 5.69 MB | 0.12s         | 0.15s     | 1.32x   |
-| zstd (level 19)                   | 3.28 MB | 2.42s         | 6.28s     | 2.59x   |
+| scenario                          | output   | native (rust) | node:zlib | speedup |
+|-----------------------------------|----------|---------------|-----------|---------|
+| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 18.34s        | 36.62s    | 2.00x   |
+| gzip (level 9)                    | 9.62 MB  | 0.28s         | 0.80s     | 2.85x   |
+| gzip (level 6)                    | 9.86 MB  | 0.19s         | 0.37s     | 1.93x   |
+| brotli (quality 11)               | 5.45 MB  | 19.67s        | 36.50s    | 1.86x   |
+| brotli (quality 6)                | 9.88 MB  | 0.31s         | 0.40s     | 1.27x   |
+| zstd (level 19)                   | 5.54 MB  | 8.35s         | 14.98s    | 1.79x   |
 
 Reading these numbers honestly:
 
-- **gzip** and **zstd** beat the ≥3x target: the Rust encoders ([zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), ~2.4x faster per core than node's bundled zlib in our measurements; libzstd) are faster per core *and* use every core, while `node:zlib` is capped at `UV_THREADPOOL_SIZE` (default 4) threads.
-- **brotli at quality 11** is the bound on the combined number: the Rust `brotli` crate is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the achievable speedup is roughly `cores / UV_THREADPOOL_SIZE` — ~2x on 8 equal cores, more on bigger machines. No implementation can honestly do better without changing the algorithm or its level.
+- **gzip** and **zstd** are faster per core ([zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), ~2.4x faster per core than node's bundled zlib in our measurements; libzstd) *and* use every core, while `node:zlib` is capped at `UV_THREADPOOL_SIZE` (default 4) threads. The two >16 MiB bundles temper the headline numbers: neither algorithm has a sectioned mode, so each giant file occupies a single thread on both sides and that tail runs at the per-core ratio rather than the thread-count ratio.
+- **brotli at quality 11** is the bound on the combined number: the Rust `brotli` crate is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the speedup is parallelism — every core against `UV_THREADPOOL_SIZE` threads across the many small files, plus the sectioned worker pool (4 x 4 MiB sections) on the >16 MiB bundles that `node:zlib` has to compress one thread per file.
 - The speedup grows with core count and shrinks if you raise `UV_THREADPOOL_SIZE` for the JS side — the benchmark prints both so runs are comparable.
 
 ### PGO / BOLT builds
@@ -219,7 +219,7 @@ Reading these numbers honestly:
 
 1. baseline release build → `target/pgo/baseline.node`
 2. instrumented build (`-Cprofile-generate`)
-3. training run over a static corpus (`scripts/pgo/corpus.mjs`: JS bundles, JSON, CSS, HTML, source maps, base64 blobs, incompressible noise — every algorithm at fast/default/max levels)
+3. training run over a static corpus (`scripts/pgo/corpus.mjs`: JS bundles, JSON, CSS, HTML, SVG sprites, source maps, base64 blobs, incompressible noise — every algorithm at fast/default/max levels)
 4. `llvm-profdata merge` (uses the rustup `llvm-tools` component; `rustup component add llvm-tools` if missing)
 5. optimized rebuild (`-Cprofile-use`) → `target/pgo/pgo.node`, also installed as the platform binding in the repo root
 6. on Linux ELF targets with `llvm-bolt`/`merge-fdata` on PATH, a BOLT post-link pass (instrument → retrain → `-reorder-blocks=ext-tsp` layout optimization) → `target/pgo/bolt.node`. BOLT does not support Mach-O/PE, so this step is skipped on macOS and Windows.
@@ -231,7 +231,7 @@ Reading these numbers honestly:
 | baseline       | plain `--release` (fat LTO, `codegen-units = 1`)           |
 | pgo / pgo+bolt | same flags plus `-Cprofile-use` (and BOLT layout on Linux) |
 
-Expect modest gains: the baseline already ships fat LTO with `codegen-units = 1`, so PGO adds a few percent on the compression-heavy scenarios (~1.1x on the combined gzip+brotli run on an M1 Pro) and is within noise on sub-second ones. Sub-second scenario deltas in the table are measurement noise, not regressions.
+Expect modest gains: the baseline already ships fat LTO with `codegen-units = 1`, so PGO adds a few percent on the compression-heavy scenarios (~1.1x on the brotli quality 11 run on an M1 Pro) and is within noise on sub-second ones. Sub-second scenario deltas in the table are measurement noise, not regressions.
 
 The release workflow builds every published binary with PGO. Cross-compiled targets run the training workload through an emulation layer — x64 Node under Rosetta 2 for `x86_64-apple-darwin`, an arm64 Node container under QEMU for `aarch64-unknown-linux-gnu`, and an Alpine container for musl — so each target trains on its own instrumented binding.
 

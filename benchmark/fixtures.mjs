@@ -22,6 +22,9 @@ export function makeFixtures(scale = 1) {
     { count: 140, min: 2 * 1024, max: 24 * 1024 }, // route chunks, css, json
     { count: 45, min: 60 * 1024, max: 300 * 1024 }, // feature bundles
     { count: 15, min: 1.5 * 1024 * 1024, max: 4.5 * 1024 * 1024 }, // vendor bundles
+    // Monolithic bundles past the 16 MiB threshold where brotli splits the
+    // input across its worker pool (4 MiB sections).
+    { count: 2, min: 17 * 1024 * 1024, max: 22 * 1024 * 1024 },
   ]
 
   const files = []

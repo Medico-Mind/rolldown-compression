@@ -106,6 +106,30 @@ function sourceMap(rand, target) {
   return Buffer.from(`{"version":3,"mappings":"${chunks.join('')}"}`)
 }
 
+function svgSprite(rand, target) {
+  // Icon-sprite path data: short draw commands over digit/comma runs — the
+  // numeric-heavy profile of generated SVG assets and charts, distinct from
+  // both markup and code.
+  const parts = ['<svg xmlns="http://www.w3.org/2000/svg">']
+  let size = parts[0].length
+  let index = 0
+  while (size < target) {
+    const points = Array.from(
+      { length: 6 + Math.floor(rand() * 10) },
+      () => `${Math.floor(rand() * 48)} ${Math.floor(rand() * 48)}`,
+    ).join(' L')
+    const part = `<symbol id="icon-${index++}" viewBox="0 0 48 48"><path d="M${points} Z" fill="#${Math.floor(
+      rand() * 0xfff,
+    )
+      .toString(16)
+      .padStart(3, '0')}"/></symbol>\n`
+    parts.push(part)
+    size += part.length
+  }
+  parts.push('</svg>')
+  return Buffer.from(parts.join(''))
+}
+
 function base64Blob(rand, target) {
   const raw = Buffer.alloc(Math.ceil((target * 3) / 4))
   for (let i = 0; i < raw.length; i++) raw[i] = Math.floor(rand() * 256)
@@ -154,6 +178,7 @@ export function makeCorpus() {
     ['styles.css', css],
     ['index.html', html],
     ['bundle.js.map', sourceMap],
+    ['sprite.svg', svgSprite],
     ['notes.txt', unicodeText],
   ]
   // Tiny inline chunk / small route chunk / medium feature bundle /
@@ -170,19 +195,31 @@ export function makeCorpus() {
     }
   }
 
-  // Vendor-bundle-sized payloads: the dominant cost in a real build. Sized
-  // to cover every tier of the multi-threaded brotli path (>= 2 MiB): 2.5 MB
-  // -> 2 sections, 3 MB -> 3, 4 MB -> 4. The source map gives the large path
-  // a second entropy profile besides JS.
+  // Vendor-bundle-sized payloads: the dominant cost in a real build. With
+  // the 4 MiB default section size the multi-threaded brotli path starts at
+  // 16 MiB, so the 2.5-4 MB vendors train the large single-threaded path and
+  // vendor-huge.js (17 MiB -> 4 sections) the default worker-pool path; the
+  // trainer's sectionSize-override batch reuses the smaller vendors for the
+  // pool code too. The source map gives the large path a second entropy
+  // profile besides JS.
   add('vendor.js', jsModule(rand, 2.5 * MB))
   add('vendor-large.js', jsModule(rand, 4 * MB))
+  add('vendor-huge.js', jsModule(rand, 17 * MB))
   add('vendor.js.map', sourceMap(rand, 3 * MB))
+
+  // Vendor-sized markup and styles (SSR/prerendered pages, utility-framework
+  // stylesheets): match-length and literal distributions unlike JS or source
+  // maps, so the large-input encoder branches don't overfit to code-shaped
+  // profiles. Both also feed the trainer's worker-pool override batch.
+  add('docs.html', html(rand, 2.5 * MB))
+  add('framework.css', css(rand, 2.5 * MB))
 
   // Base64 asset: text-encoded noise, compresses poorly but not never.
   add('font.woff2.css', base64Blob(rand, 192 * KB))
 
   // Incompressible random payloads at several sizes; the 4 MB one drives the
-  // multi-threaded brotli path with input that yields almost no matches.
+  // multi-threaded brotli path via the trainer's sectionSize override with
+  // input that yields almost no matches.
   add('noise-xs.bin', randomBinary(rand, 4 * KB), false)
   add('asset.bin', randomBinary(rand, 256 * KB), false)
   add('noise-md.bin', randomBinary(rand, 1 * MB), false)

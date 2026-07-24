@@ -7,9 +7,10 @@
  * pool (UV_THREADPOOL_SIZE, default 4) — i.e. this compares against the
  * reference plugin's best case, not a strawman serial loop.
  *
- * The fixture set models a real dist/ folder: ~200 files / ~50 MB with a
+ * The fixture set models a real dist/ folder: ~200 files / ~85 MB with a
  * long-tail size distribution (many small route chunks, a few large vendor
- * bundles).
+ * bundles, two monolithic >16 MiB bundles that take the multithreaded
+ * brotli path).
  *
  * Usage: node benchmark/index.mjs [--quick]
  */
