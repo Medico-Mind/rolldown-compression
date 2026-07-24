@@ -250,7 +250,7 @@ Prebuilt binaries are published for:
 | Linux x64 (musl) | `x86_64-unknown-linux-musl` |
 | Windows x64 | `x86_64-pc-windows-msvc` |
 
-Node.js >= 18.
+Node.js >= 22.14.0 (since v2; v1.x supports Node.js >= 18).
 
 ### WebAssembly fallback
 

@@ -3,6 +3,10 @@
 pub mod compress;
 pub mod scheduler;
 
+#[cfg(not(target_family = "wasm"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // The napi glue references Node-API symbols that only exist inside a Node.js
 // process, so it is compiled out of the `cargo test` harness. All logic worth
 // testing lives in `compress` and `scheduler`.
