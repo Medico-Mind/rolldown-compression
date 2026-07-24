@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.1.1
+
+### Patch Changes
+
+- [`2fa931e`](https://github.com/Medico-Mind/rolldown-compression/commit/2fa931efef1b6e58e48c0782aeed83aee6b9d26b) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix windows warning and up deps
+
 ## 2.1.0
 
 ### Minor Changes
