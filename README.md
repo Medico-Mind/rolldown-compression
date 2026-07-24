@@ -8,7 +8,7 @@
 
 Fast, native compression plugin for [Rolldown](https://rolldown.rs) and [Vite 8+](#usage-with-vite): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
 
-**3x faster builds in a real project**: switching a production app from `node:zlib`-based (node v26.4.0) compression to this plugin cut total build time from 3:50 to 1:23 (294% → 688% CPU utilization) — see [real-world results](#real-world-results).
+**3x faster builds in a real project**: switching a production app from `node:zlib`-based (node v26.4.0) compression to this plugin cut total build time from 3:50 to 1:13 (740% → 688% CPU utilization) — see [real-world results](#real-world-results).
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
 
@@ -80,32 +80,32 @@ export default defineConfig({
 
 ## Options
 
-| option | type | default | description |
-| --- | --- | --- | --- |
-| `include` | `string \| RegExp \| Array<string \| RegExp>` | `/\.(html\|xml\|css\|json\|js\|mjs\|svg\|yaml\|yml\|toml\|txt\|wasm)$/` | Files to compress. Strings are [picomatch](https://github.com/micromatch/picomatch) globs, matched against bundle-relative file names ([`@rollup/pluginutils` `createFilter`](https://github.com/rollup/plugins/tree/master/packages/pluginutils#createfilter) semantics). |
-| `exclude` | `string \| RegExp \| Array<string \| RegExp>` | — | Files to skip. **Wins over `include`.** |
-| `threshold` | `number` | `0` | Minimum original size in bytes for a file to be compressed. |
-| `algorithms` | `Array<AlgorithmName \| DefineAlgorithmResult>` | `['gzip', 'brotli']` | Algorithms to run. Aliases `gz`, `br`, `brotliCompress`, `zstandard` normalize to `gzip` / `brotli` / `zstd`. |
-| `filename` | `string \| (fileName, algorithm) => string` | `'[path][base]' + ext` | Name of the emitted artifact. Tokens: `[path]` (directory incl. trailing `/`), `[base]`, `[name]`, `[ext]` (with dot), `[hash]` (8-char sha256 of the content). Default extensions: `.gz`, `.br`, `.zst`. |
-| `deleteOriginalAssets` | `boolean` | `false` | Remove the original from the bundle after all algorithms processed it. Errors if `filename` resolves to the source name. |
-| `skipIfLargerOrEqual` | `boolean` | `true` | Don't emit artifacts whose compressed size is `>=` the original. |
-| `concurrency` | `number` | `0` | Native worker threads. `0` = number of logical CPUs. |
-| `chunkSize` | `number` | `0` | Max source bytes buffered per native compression batch. `0` = one batch for the whole build. A positive value (e.g. `64 * 1024 * 1024`) caps the plugin's peak memory overhead at roughly one batch of source copies plus its compressed outputs; a single file larger than `chunkSize` still forms its own batch. The bundler keeps the original bundle in memory regardless. In [stream mode](#stream-mode) `0` falls back to a 4 MB batch instead of one big batch. |
-| `stream` | `boolean` | `false` | Compress from disk in `writeBundle` (order `post`) instead of in memory in `generateBundle`: files are read on demand in bounded batches (`chunkSize` bytes, default 4 MB), and assets written to disk by other plugins' `writeBundle` hooks are compressed too (see [stream mode](#stream-mode)). |
-| `logLevel` | `'silent' \| 'error' \| 'warn' \| 'info'` | `'info'` | Plugin log verbosity; `info` prints a per-algorithm summary at build end. |
-| `enableInWatchMode` | `boolean` | `false` | The plugin is a no-op in watch/dev mode unless enabled (see [watch mode](#watch--dev-mode)). |
+| option                 | type                                            | default                                                                 | description                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+|------------------------|-------------------------------------------------|-------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `include`              | `string \| RegExp \| Array<string \| RegExp>`   | `/\.(html\|xml\|css\|json\|js\|mjs\|svg\|yaml\|yml\|toml\|txt\|wasm)$/` | Files to compress. Strings are [picomatch](https://github.com/micromatch/picomatch) globs, matched against bundle-relative file names ([`@rollup/pluginutils` `createFilter`](https://github.com/rollup/plugins/tree/master/packages/pluginutils#createfilter) semantics).                                                                                                                                                                                             |
+| `exclude`              | `string \| RegExp \| Array<string \| RegExp>`   | —                                                                       | Files to skip. **Wins over `include`.**                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `threshold`            | `number`                                        | `0`                                                                     | Minimum original size in bytes for a file to be compressed.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `algorithms`           | `Array<AlgorithmName \| DefineAlgorithmResult>` | `['gzip', 'brotli']`                                                    | Algorithms to run. Aliases `gz`, `br`, `brotliCompress`, `zstandard` normalize to `gzip` / `brotli` / `zstd`.                                                                                                                                                                                                                                                                                                                                                          |
+| `filename`             | `string \| (fileName, algorithm) => string`     | `'[path][base]' + ext`                                                  | Name of the emitted artifact. Tokens: `[path]` (directory incl. trailing `/`), `[base]`, `[name]`, `[ext]` (with dot), `[hash]` (8-char sha256 of the content). Default extensions: `.gz`, `.br`, `.zst`.                                                                                                                                                                                                                                                              |
+| `deleteOriginalAssets` | `boolean`                                       | `false`                                                                 | Remove the original from the bundle after all algorithms processed it. Errors if `filename` resolves to the source name.                                                                                                                                                                                                                                                                                                                                               |
+| `skipIfLargerOrEqual`  | `boolean`                                       | `true`                                                                  | Don't emit artifacts whose compressed size is `>=` the original.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `concurrency`          | `number`                                        | `0`                                                                     | Native worker threads. `0` = number of logical CPUs.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `chunkSize`            | `number`                                        | `0`                                                                     | Max source bytes buffered per native compression batch. `0` = one batch for the whole build. A positive value (e.g. `64 * 1024 * 1024`) caps the plugin's peak memory overhead at roughly one batch of source copies plus its compressed outputs; a single file larger than `chunkSize` still forms its own batch. The bundler keeps the original bundle in memory regardless. In [stream mode](#stream-mode) `0` falls back to a 4 MB batch instead of one big batch. |
+| `stream`               | `boolean`                                       | `false`                                                                 | Compress from disk in `writeBundle` (order `post`) instead of in memory in `generateBundle`: files are read on demand in bounded batches (`chunkSize` bytes, default 4 MB), and assets written to disk by other plugins' `writeBundle` hooks are compressed too (see [stream mode](#stream-mode)).                                                                                                                                                                     |
+| `logLevel`             | `'silent' \| 'error' \| 'warn' \| 'info'`       | `'info'`                                                                | Plugin log verbosity; `info` prints a per-algorithm summary at build end.                                                                                                                                                                                                                                                                                                                                                                                              |
+| `enableInWatchMode`    | `boolean`                                       | `false`                                                                 | The plugin is a no-op in watch/dev mode unless enabled (see [watch mode](#watch--dev-mode)).                                                                                                                                                                                                                                                                                                                                                                           |
 
 All options are validated when `compression()` is called — invalid levels (e.g. brotli quality 12), unknown algorithm names or malformed filters throw immediately, not mid-build.
 
 ### Per-algorithm options
 
-| algorithm | option | range | default |
-| --- | --- | --- | --- |
-| `gzip` | `level` | 0–9 | 6 |
-| `brotli` | `quality` | 0–11 | 11 |
-| `brotli` | `windowBits` | 10–24 | 22 |
-| `brotli` | `sectionSize` | ≥ 1 (bytes) | 4 MiB |
-| `zstd` | `level` | 1–22 | 19 |
+| algorithm | option        | range       | default |
+|-----------|---------------|-------------|---------|
+| `gzip`    | `level`       | 0–9         | 6       |
+| `brotli`  | `quality`     | 0–11        | 11      |
+| `brotli`  | `windowBits`  | 10–24       | 22      |
+| `brotli`  | `sectionSize` | ≥ 1 (bytes) | 4 MiB   |
+| `zstd`    | `level`       | 1–22        | 19      |
 
 ```ts
 defineAlgorithm('gzip', { level: 9 })
@@ -176,7 +176,7 @@ Switching a production app's build from `node:zlib`-based compression to this pl
 
 ```
 before: npm run build  675.82s user 4.63s system 294% cpu 3:50.92 total
-after:  npm run build  567.80s user 7.41s system 688% cpu 1:23.58 total
+after:  npm run build  537.24s user 5.59s system 740% cpu 1:13.29 total
 ```
 
 **4.03x faster wall clock.** Compression stops being serialized behind the libuv thread pool (default `UV_THREADPOOL_SIZE=4`) and runs on all cores instead — CPU utilization jumps from 235% to 784%.
