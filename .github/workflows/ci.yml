@@ -37,7 +37,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm covers aarch64 linux natively (no QEMU), matching
+        # the aarch64-unknown-linux-gnu release target.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -100,8 +102,44 @@ jobs:
           cache: npm
       - uses: Swatinem/rust-cache@v2
       - run: rustup component add llvm-tools
+      # --c-pgo needs a clang whose major matches the LLVM inside rustc, so
+      # the instrumented C and Rust code share one profiling runtime and
+      # raw profile format (see release.yml). Ubuntu's clang usually lags
+      # rustc's LLVM, so install the matching major from apt.llvm.org; if it
+      # isn't published there yet, fall back to the distro clang and let
+      # build.mjs downgrade to Rust-only PGO.
+      - name: Install clang matching rustc LLVM (C PGO)
+        run: |
+          MAJOR="$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')"
+          if wget -qO "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh && sudo bash "$RUNNER_TEMP/llvm.sh" "$MAJOR"; then
+            CLANG="clang-$MAJOR"
+          else
+            echo "::warning::clang-$MAJOR unavailable from apt.llvm.org; using distro clang (C PGO may be skipped)"
+            CLANG=clang
+          fi
+          "$CLANG" --version
+          {
+            echo "CC=$CLANG"
+            echo "CXX=${CLANG/clang/clang++}"
+          } >> "$GITHUB_ENV"
+      # Unversioned llvm-bolt + merge-fdata binaries, which is what
+      # scripts/pgo/build.mjs probes for on PATH — without them the BOLT
+      # pass is silently skipped and the benchmark would measure a PGO-only
+      # binding instead of the PGO+BOLT binary that ships for x64-linux-gnu.
+      # libbolt-dev provides the instrumentation runtime (libbolt_rt_instr.a)
+      # that `llvm-bolt -instrument` links into the binding — but it installs
+      # under the versioned prefix (/usr/lib/llvm-NN/lib/), while the
+      # unversioned /usr/bin/llvm-bolt resolves the runtime relative to
+      # itself, i.e. /usr/lib/ — so link the libraries over there.
+      - name: Install llvm-bolt (BOLT post-link pass)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm-bolt libbolt-dev
+          for lib in /usr/lib/llvm-*/lib/libbolt_rt_*.a; do
+            sudo ln -sf "$lib" "/usr/lib/$(basename "$lib")"
+          done
       - run: npm ci
-      - run: npm run build:pgo
+      - run: npm run build:pgo -- --c-pgo
       - name: Run node benchmark
         run: |
           echo '## Benchmark results' >> "$GITHUB_STEP_SUMMARY"
