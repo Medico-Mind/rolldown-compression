@@ -13,7 +13,7 @@ use brotli::enc::{
     BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
     UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
 };
-use std::cell::RefCell;
+use std::cell::{LazyCell, RefCell};
 use std::io::Write;
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
@@ -193,12 +193,12 @@ thread_local! {
     /// and a `thread_local` is dropped in a TLS destructor, which on Windows
     /// runs under the loader lock — the joined thread cannot exit without
     /// that same lock, deadlocking the process (rust-lang/rust#74875).
-    static BROTLI_WORKER_POOL: RefCell<BrotliWorkerPool> = {
+    static BROTLI_WORKER_POOL: RefCell<LazyCell<BrotliWorkerPool>> = RefCell::new(LazyCell::new(|| {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
         // The calling thread compresses the last section itself, so a budget
         // of `threads` sections needs only `threads - 1` pool workers.
-        RefCell::new(new_work_pool(threads.saturating_sub(1)))
-    };
+        new_work_pool(threads.saturating_sub(1))
+    }));
 }
 
 /// Compress large inputs by splitting them into ~`section_size` sections
@@ -235,7 +235,12 @@ fn compress_brotli(
     if input_len >= 2 * section_size {
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
         return BROTLI_WORKER_POOL.with_borrow_mut(|pool| {
-            compress_brotli_pooled(&params, num_sections, pool, SharedInput(input))
+            compress_brotli_pooled(
+                &params,
+                num_sections,
+                LazyCell::force_mut(pool),
+                SharedInput(input),
+            )
         });
     }
     #[cfg(windows)]
