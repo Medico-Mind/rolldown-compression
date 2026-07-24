@@ -1,5 +1,17 @@
 # @medicomind/rolldown-compression
 
+## 2.0.1
+
+### Patch Changes
+
+- [`b3d6170`](https://github.com/Medico-Mind/rolldown-compression/commit/b3d61702cd9db4fb2f4d54c24419e50e1ea9a3fe) Thanks [@Mnwa](https://github.com/Mnwa)! - Faster prebuilt Linux binaries through deeper build optimization:
+
+  - The `x86_64-linux-gnu` binding is now additionally optimized with LLVM BOLT: after the PGO build, the binary is instrumented, retrained on the compression workload, and re-laid-out post-link (basic-block reordering, function splitting, ICF).
+  - PGO now also covers the C dependencies (zstd, mimalloc), not just the Rust code, on the Linux targets: the CI installs a clang matching rustc's LLVM major and instruments the C sources with `-fprofile-generate`/`-fprofile-use` alongside rustc's `-Cprofile-generate`/`-Cprofile-use`, so both languages train and optimize from one merged profile. The new `--c-pgo` flag in `scripts/pgo/build.mjs` verifies the clang/rustc LLVM majors match and safely falls back to Rust-only PGO when they don't.
+  - All Linux targets now compile their C sources with clang (previously host gcc on `x86_64-linux-gnu` and musl).
+
+  No API or behavior changes — the published bindings are just faster on Linux.
+
 ## 2.0.0
 
 ### Major Changes
