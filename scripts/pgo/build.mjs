@@ -214,9 +214,14 @@ if (skipBaseline) {
 }
 
 log('step 2/5: instrumented build (-Cprofile-generate)')
+// -enable-name-compression=false: clang zlib-compresses the profile name
+// section by default, but the llvm-profdata bundled with some rustc
+// toolchains (notably musl-hosted ones) is built without zlib and then
+// cannot merge the .profraw files. rustc's own instrumentation already
+// writes uncompressed names.
 const instrumented = napiBuild(
   `-Cprofile-generate=${profilesDir}`,
-  cPgoEnv(`-fprofile-generate=${profilesDir}`),
+  cPgoEnv(`-fprofile-generate=${profilesDir} -mllvm -enable-name-compression=false`),
 )
 fs.copyFileSync(instrumented, path.join(pgoDir, 'instrumented.node'))
 
