@@ -13,7 +13,9 @@ use brotli::enc::{
     BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
     UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
 };
-use std::cell::{LazyCell, RefCell};
+#[cfg(not(windows))]
+use std::cell::LazyCell;
+use std::cell::RefCell;
 use std::io::Write;
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
