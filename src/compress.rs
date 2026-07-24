@@ -234,13 +234,9 @@ fn compress_brotli(
     #[cfg(not(windows))]
     if input_len >= 2 * section_size {
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        return BROTLI_WORKER_POOL.with_borrow_mut(|pool| {
-            compress_brotli_pooled(
-                &params,
-                num_sections,
-                LazyCell::force_mut(pool),
-                SharedInput(input),
-            )
+        return BROTLI_WORKER_POOL.with_borrow_mut(|cell| match LazyCell::get_mut(cell) {
+            Some(pool) => compress_brotli_pooled(&params, num_sections, pool, SharedInput(input)),
+            None => compress_brotli_single(&params, input.as_ref()),
         });
     }
     #[cfg(windows)]
