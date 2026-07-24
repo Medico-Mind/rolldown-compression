@@ -203,10 +203,20 @@ jobs:
             echo "TARGET_CXX=${CLANG/clang/clang++}"
           } >> "$GITHUB_ENV"
       # Unversioned llvm-bolt + merge-fdata binaries, which is what
-      # scripts/pgo/build.mjs probes for on PATH.
+      # scripts/pgo/build.mjs probes for on PATH. libbolt-dev provides the
+      # instrumentation runtime (libbolt_rt_instr.a) that `llvm-bolt
+      # -instrument` links into the binding — but it installs under the
+      # versioned prefix (/usr/lib/llvm-NN/lib/), while the unversioned
+      # /usr/bin/llvm-bolt resolves the runtime relative to itself, i.e.
+      # /usr/lib/ — so link the libraries over there.
       - name: Install llvm-bolt (BOLT post-link pass)
         if: ${{ matrix.settings.bolt }}
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends llvm-bolt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm-bolt libbolt-dev
+          for lib in /usr/lib/llvm-*/lib/libbolt_rt_*.a; do
+            sudo ln -sf "$lib" "/usr/lib/$(basename "$lib")"
+          done
       - name: Set up QEMU (arm64 PGO training container)
         if: ${{ contains(matrix.settings.build, 'linux/arm64') }}
         uses: docker/setup-qemu-action@v3
