@@ -39,10 +39,6 @@ pub enum Algorithm {
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
-/// Default target section size per brotli worker thread, matching the
-/// default window (`2^BROTLI_DEFAULT_WINDOW_BITS` bytes). Sections much
-/// smaller than the window lose too many cross-section matches.
-pub const BROTLI_DEFAULT_SECTION_SIZE: u32 = 4 * 1024 * 1024;
 #[cfg(not(windows))]
 const BROTLI_MIN_THREADS: usize = 2;
 #[cfg(not(windows))]
@@ -141,7 +137,9 @@ pub fn compress(
         Algorithm::Brotli => {
             let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
             validate_window_bits(window_bits)?;
-            let section_size = section_size.unwrap_or(BROTLI_DEFAULT_SECTION_SIZE);
+            // Default to one full window per section: sections much smaller
+            // than the window lose too many cross-section matches.
+            let section_size = section_size.unwrap_or(1 << window_bits);
             validate_section_size(section_size)?;
             compress_brotli(level, window_bits, section_size as usize, input)
         }
@@ -316,9 +314,10 @@ mod tests {
 
     const ALGORITHMS: [Algorithm; 3] = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
 
-    /// Default section size and the multi-section threshold derived from it,
-    /// mirroring the on-the-fly computation in `compress_brotli`.
-    const DEFAULT_SECTION_SIZE: usize = BROTLI_DEFAULT_SECTION_SIZE as usize;
+    /// Default section size (one window, `2^window_bits` bytes) and the
+    /// multi-section threshold derived from it, mirroring the on-the-fly
+    /// computation in `compress`.
+    const DEFAULT_SECTION_SIZE: usize = 1 << BROTLI_DEFAULT_WINDOW_BITS;
     const DEFAULT_MULTI_THRESHOLD: usize = 4 * DEFAULT_SECTION_SIZE;
 
     fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {
@@ -574,6 +573,35 @@ mod tests {
         )
         .expect("compress");
         assert!(compressed.len() < input.len());
+        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn derives_default_section_size_from_window_bits() {
+        // With no explicit section size the default is one window
+        // (2^windowBits bytes), so windowBits 18 gives 256 KiB sections and
+        // this ~1 MB input crosses the 4x multithreading threshold that the
+        // default window would compress single-threaded. Sectioned output
+        // differs from the single-stream encoder's, which proves the
+        // derived default engaged the worker-pool path.
+        let input = b"export const value = 42; // padding padding\n".repeat(24_000);
+        let window_bits = 18_u32;
+        assert!(input.len() >= 4 << window_bits);
+        assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
+        let params = BrotliEncoderParams {
+            quality: 5,
+            lgwin: window_bits as i32,
+            size_hint: input.len(),
+            ..Default::default()
+        };
+        let single = compress_brotli_single(&params, input.as_ref()).expect("compress");
+        let compressed = compress(Algorithm::Brotli, 5, Some(window_bits), None, input.clone())
+            .expect("compress");
+        assert_ne!(
+            compressed, single,
+            "default section size should follow windowBits onto the sectioned path"
+        );
         assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
 

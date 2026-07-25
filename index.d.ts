@@ -56,8 +56,9 @@ export interface CompressTask {
   /**
    * Brotli only: target section size in bytes per worker thread when
    * large inputs are split across the brotli worker pool; inputs at
-   * least four times this size take the multithreaded path
-   * (default 4 MiB, i.e. multithreading from 16 MiB).
+   * least four times this size take the multithreaded path. Defaults
+   * to one window (`2^windowBits` bytes), i.e. 4 MiB and
+   * multithreading from 16 MiB at the default window.
    */
   sectionSize?: number
 }

@@ -104,7 +104,7 @@ All options are validated when `compression()` is called — invalid levels (e.g
 | `gzip`    | `level`       | 0–9         | 6       |
 | `brotli`  | `quality`     | 0–11        | 11      |
 | `brotli`  | `windowBits`  | 10–24       | 22      |
-| `brotli`  | `sectionSize` | ≥ 1 (bytes) | 4 MiB   |
+| `brotli`  | `sectionSize` | ≥ 1 (bytes) | `2^windowBits` B |
 | `zstd`    | `level`       | 1–22        | 19      |
 
 ```ts
@@ -113,7 +113,7 @@ defineAlgorithm('brotli', { quality: 7, windowBits: 22 })
 defineAlgorithm('zstd', { level: 12 })
 ```
 
-`sectionSize` is the target number of bytes each brotli worker thread compresses when a large input is split across the native worker pool; inputs at least four times `sectionSize` take the multithreaded path (16 MiB at the default). Smaller sections finish large files faster at a slight cost in compression ratio — sections much smaller than the window (`2^windowBits` bytes) lose too many cross-section matches.
+`sectionSize` is the target number of bytes each brotli worker thread compresses when a large input is split across the native worker pool; inputs at least four times `sectionSize` take the multithreaded path. It defaults to one window (`2^windowBits` bytes) — 4 MiB and multithreading from 16 MiB at the default window — because sections much smaller than the window lose too many cross-section matches. Smaller sections finish large files faster at a slight cost in compression ratio.
 
 ## How it works
 
