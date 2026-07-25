@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.1.2
+
+### Patch Changes
+
+- [`6e0b693`](https://github.com/Medico-Mind/rolldown-compression/commit/6e0b693fd24338102876ecb4bb605ed37e1a3804) Thanks [@Mnwa](https://github.com/Mnwa)! - Default brotli `sectionSize` to one window (`2^windowBits` bytes) instead of a fixed 4 MiB, so a custom `windowBits` gets a matching section size. Unchanged at the default window of 22, where both are 4 MiB.
+
 ## 2.1.1
 
 ### Patch Changes
