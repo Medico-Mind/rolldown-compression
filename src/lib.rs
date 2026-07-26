@@ -14,6 +14,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod binding {
     use napi::bindgen_prelude::*;
     use napi_derive::napi;
+    use rayon::prelude::*;
 
     use crate::compress::{Algorithm, validate_section_size, validate_window_bits};
     use crate::scheduler::{BatchItem, BatchOutcome, run_batch};
@@ -75,7 +76,8 @@ mod binding {
     pub struct CompressWorker {
         tasks: Vec<ParsedTask>,
         buffers: Vec<Buffer>,
-        concurrency: usize,
+        /// Dedicated pool every stage of this batch runs on.
+        pool: rayon::ThreadPool,
         skip_if_larger_or_equal: bool,
     }
 
@@ -94,53 +96,64 @@ mod binding {
         fn compute(&mut self) -> Result<Self::Output> {
             let tasks = std::mem::take(&mut self.tasks);
             let buffers = std::mem::take(&mut self.buffers);
-            let original_sizes: Vec<u32> =
-                buffers.iter().map(|buffer| buffer.len() as u32).collect();
+            let skip_if_larger_or_equal = self.skip_if_larger_or_equal;
 
-            // Each buffer is moved into its item so the scheduler drops the
-            // reference to the JS-side allocation as soon as that item is
-            // compressed, instead of pinning every input until the batch
-            // resolves on the event loop.
-            let items: Vec<BatchItem> = tasks
-                .iter()
-                .zip(buffers)
-                .map(|(task, buffer)| BatchItem {
-                    algorithm: task.algorithm,
-                    level: task.level,
-                    window_bits: task.window_bits,
-                    section_size: task.section_size,
-                    input: buffer,
-                })
-                .collect();
+            self.pool.install(move || {
+                // Each buffer is moved into its item so the scheduler drops
+                // the reference to the JS-side allocation as soon as that item
+                // is compressed, instead of pinning every input until the
+                // batch resolves on the event loop. That consumes the input,
+                // so the reporting metadata is split off here.
+                let (metadata, items): (Vec<_>, Vec<BatchItem>) = tasks
+                    .into_par_iter()
+                    .zip(buffers)
+                    .map(|(task, buffer)| {
+                        let original_size = buffer.len() as u32;
+                        (
+                            (task.file_name, task.algorithm.name(), original_size),
+                            BatchItem {
+                                algorithm: task.algorithm,
+                                level: task.level,
+                                window_bits: task.window_bits,
+                                section_size: task.section_size,
+                                input: buffer,
+                            },
+                        )
+                    })
+                    .unzip();
 
-            let outcomes = run_batch(items, self.concurrency, self.skip_if_larger_or_equal);
+                let outcomes = run_batch(items, skip_if_larger_or_equal);
 
-            Ok(tasks
-                .into_iter()
-                .zip(original_sizes)
-                .zip(outcomes)
-                .map(|((task, original_size), outcome)| WorkerOutcome {
-                    file_name: task.file_name,
-                    algorithm: task.algorithm.name(),
-                    original_size,
-                    outcome,
-                })
-                .collect())
+                Ok(metadata
+                    .into_par_iter()
+                    .zip(outcomes)
+                    .map(
+                        |((file_name, algorithm, original_size), outcome)| WorkerOutcome {
+                            file_name,
+                            algorithm,
+                            original_size,
+                            outcome,
+                        },
+                    )
+                    .collect())
+            })
         }
 
         fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-            Ok(output
-                .into_iter()
-                .map(|result| CompressResult {
-                    file_name: result.file_name,
-                    algorithm: result.algorithm.to_string(),
-                    compressed_size: result.outcome.data.len() as u32,
-                    data: result.outcome.data.into(),
-                    original_size: result.original_size,
-                    skipped: result.outcome.skipped,
-                    error: result.outcome.error,
-                })
-                .collect())
+            Ok(self.pool.install(move || {
+                output
+                    .into_par_iter()
+                    .map(|result| CompressResult {
+                        file_name: result.file_name,
+                        algorithm: result.algorithm.to_string(),
+                        compressed_size: result.outcome.data.len() as u32,
+                        data: result.outcome.data.into(),
+                        original_size: result.original_size,
+                        skipped: result.outcome.skipped,
+                        error: result.outcome.error,
+                    })
+                    .collect()
+            }))
         }
     }
 
@@ -212,10 +225,23 @@ mod binding {
             .and_then(|options| options.skip_if_larger_or_equal)
             .unwrap_or(false);
 
+        // Built here rather than in `compute` so the worker thread spends all
+        // of its time compressing. `num_threads(0)` is rayon's default sizing,
+        // one thread per logical CPU.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(concurrency)
+            .build()
+            .map_err(|err| {
+                Error::new(
+                    Status::GenericFailure,
+                    format!("failed to create the compression thread pool: {err}"),
+                )
+            })?;
+
         Ok(AsyncTask::new(CompressWorker {
             tasks: parsed,
             buffers,
-            concurrency,
+            pool,
             skip_if_larger_or_equal,
         }))
     }

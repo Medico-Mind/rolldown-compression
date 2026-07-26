@@ -38,33 +38,16 @@ pub struct BatchOutcome {
 
 /// Run every item of the batch in parallel and return outcomes in input order.
 ///
-/// * `concurrency` — number of worker threads; `0` uses the rayon default
-///   (number of logical CPUs).
+/// Work runs on the caller's ambient rayon pool: call this from inside
+/// [`rayon::ThreadPool::install`] to pin the batch to a dedicated pool,
+/// otherwise it lands on the global one.
+///
 /// * `skip_if_larger_or_equal` — mark items whose compressed size would be
 ///   `>=` the input size as skipped instead of returning the bloated output.
 ///
 /// A failure (or panic) of a single item never aborts the batch; it is
 /// reported through [`BatchOutcome::error`].
-pub fn run_batch(
-    items: Vec<BatchItem>,
-    concurrency: usize,
-    skip_if_larger_or_equal: bool,
-) -> Vec<BatchOutcome> {
-    if concurrency == 0 {
-        return process_compress(items, skip_if_larger_or_equal);
-    }
-
-    match rayon::ThreadPoolBuilder::new()
-        .num_threads(concurrency)
-        .build()
-    {
-        Ok(pool) => pool.install(|| process_compress(items, skip_if_larger_or_equal)),
-        // Falling back to the global pool is better than failing the batch.
-        Err(_) => process_compress(items, skip_if_larger_or_equal),
-    }
-}
-
-fn process_compress(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
+pub fn run_batch(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
     let mut outcomes: Vec<BatchOutcome> = vec![Default::default(); items.len()];
 
     let mut tasks: Vec<(BatchItem, &mut BatchOutcome)> =
@@ -155,6 +138,20 @@ mod tests {
             .into_bytes()
     }
 
+    /// Run a batch on a dedicated pool, the way the napi binding does.
+    /// `threads` of 0 means the rayon default (one per logical CPU).
+    fn run_batch_on_pool(
+        items: Vec<BatchItem>,
+        threads: usize,
+        skip_if_larger_or_equal: bool,
+    ) -> Vec<BatchOutcome> {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool")
+            .install(|| run_batch(items, skip_if_larger_or_equal))
+    }
+
     fn make_items(inputs: &[Vec<u8>]) -> Vec<BatchItem> {
         let algorithms = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
         inputs
@@ -176,7 +173,7 @@ mod tests {
     #[test]
     fn batch_preserves_input_order_and_succeeds() {
         let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
-        let outcomes = run_batch(make_items(&inputs), 0, false);
+        let outcomes = run_batch_on_pool(make_items(&inputs), 0, false);
         assert_eq!(outcomes.len(), inputs.len());
         for outcome in &outcomes {
             assert!(outcome.error.is_none());
@@ -189,9 +186,9 @@ mod tests {
     fn batch_is_deterministic_across_thread_counts() {
         let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
 
-        let single = run_batch(make_items(&inputs), 1, false);
+        let single = run_batch_on_pool(make_items(&inputs), 1, false);
         for threads in [2, 4, 8] {
-            let multi = run_batch(make_items(&inputs), threads, false);
+            let multi = run_batch_on_pool(make_items(&inputs), threads, false);
             assert_eq!(single.len(), multi.len());
             for (a, b) in single.iter().zip(multi.iter()) {
                 assert_eq!(a.data, b.data, "output differs with {threads} threads");
@@ -212,12 +209,12 @@ mod tests {
                 input: input.clone(),
             }]
         };
-        let outcomes = run_batch(make_items(), 0, true);
+        let outcomes = run_batch_on_pool(make_items(), 0, true);
         assert!(outcomes[0].skipped);
         assert!(outcomes[0].data.is_empty());
         assert!(outcomes[0].error.is_none());
 
-        let outcomes = run_batch(make_items(), 0, false);
+        let outcomes = run_batch_on_pool(make_items(), 0, false);
         assert!(!outcomes[0].skipped);
         assert!(outcomes[0].data.len() > input.len());
     }
@@ -243,7 +240,7 @@ mod tests {
                 input: good.clone(),
             },
         ];
-        let outcomes = run_batch(items, 0, false);
+        let outcomes = run_batch_on_pool(items, 0, false);
         assert!(outcomes[0].error.is_none());
         assert!(!outcomes[0].data.is_empty());
         assert!(outcomes[1].error.is_some());
