@@ -16,7 +16,9 @@ use brotli::enc::{
 #[cfg(not(windows))]
 use std::cell::LazyCell;
 use std::cell::RefCell;
+use std::fmt::Display;
 use std::io::Write;
+use std::str::FromStr;
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
 /// production, a plain `Vec<u8>` under `cargo test`. Both hand out `&[u8]`
@@ -45,29 +47,6 @@ const BROTLI_MIN_THREADS: usize = 2;
 const BROTLI_MAX_THREADS: usize = 4;
 
 impl Algorithm {
-    /// Parse a canonical algorithm name coming over the FFI boundary.
-    ///
-    /// Alias normalization (`gz`, `br`, `zstandard`, ...) happens in the
-    /// TypeScript layer; the native module only accepts canonical names.
-    pub fn parse(name: &str) -> Result<Self, String> {
-        match name {
-            "gzip" => Ok(Self::Gzip),
-            "brotli" => Ok(Self::Brotli),
-            "zstd" => Ok(Self::Zstd),
-            other => Err(format!(
-                "unknown algorithm `{other}`, expected one of: gzip, brotli, zstd"
-            )),
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Gzip => "gzip",
-            Self::Brotli => "brotli",
-            Self::Zstd => "zstd",
-        }
-    }
-
     pub fn default_level(self) -> u32 {
         match self {
             Self::Gzip => 6,
@@ -89,10 +68,39 @@ impl Algorithm {
         if level < min || level > max {
             return Err(format!(
                 "invalid {} level {level}: expected {min}..={max}",
-                self.name()
+                self
             ));
         }
         Ok(())
+    }
+}
+
+impl FromStr for Algorithm {
+    type Err = String;
+
+    /// Parse a canonical algorithm name coming over the FFI boundary.
+    ///
+    /// Alias normalization (`gz`, `br`, `zstandard`, ...) happens in the
+    /// TypeScript layer; the native module only accepts canonical names.
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "gzip" => Ok(Self::Gzip),
+            "brotli" => Ok(Self::Brotli),
+            "zstd" => Ok(Self::Zstd),
+            other => Err(format!(
+                "unknown algorithm `{other}`, expected one of: gzip, brotli, zstd"
+            )),
+        }
+    }
+}
+
+impl Display for Algorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gzip => f.write_str("gzip"),
+            Self::Brotli => f.write_str("brotli"),
+            Self::Zstd => f.write_str("zstd"),
+        }
     }
 }
 
@@ -366,13 +374,13 @@ mod tests {
             assert!(
                 compressed.len() < input.len(),
                 "{} should shrink repetitive input",
-                algorithm.name()
+                algorithm
             );
             assert_eq!(
                 decompress(algorithm, &compressed),
                 input,
                 "{} round-trip mismatch",
-                algorithm.name()
+                algorithm
             );
         }
     }
@@ -527,7 +535,7 @@ mod tests {
             assert!(
                 high.len() <= low.len(),
                 "{}: level {max} produced {} bytes vs {} at min level",
-                algorithm.name(),
+                algorithm,
                 high.len(),
                 low.len()
             );
@@ -607,10 +615,10 @@ mod tests {
 
     #[test]
     fn parses_canonical_names_only() {
-        assert_eq!(Algorithm::parse("gzip").unwrap(), Algorithm::Gzip);
-        assert_eq!(Algorithm::parse("brotli").unwrap(), Algorithm::Brotli);
-        assert_eq!(Algorithm::parse("zstd").unwrap(), Algorithm::Zstd);
-        assert!(Algorithm::parse("gz").is_err());
-        assert!(Algorithm::parse("lzma").is_err());
+        assert_eq!("gzip".parse::<Algorithm>().unwrap(), Algorithm::Gzip);
+        assert_eq!("brotli".parse::<Algorithm>().unwrap(), Algorithm::Brotli);
+        assert_eq!("zstd".parse::<Algorithm>().unwrap(), Algorithm::Zstd);
+        assert!("gz".parse::<Algorithm>().is_err());
+        assert!("lzma".parse::<Algorithm>().is_err());
     }
 }

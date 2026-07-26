@@ -83,7 +83,7 @@ mod binding {
 
     pub struct WorkerOutcome {
         file_name: String,
-        algorithm: &'static str,
+        algorithm: Algorithm,
         original_size: u32,
         outcome: BatchOutcome,
     }
@@ -110,7 +110,7 @@ mod binding {
                     .map(|(task, buffer)| {
                         let original_size = buffer.len() as u32;
                         (
-                            (task.file_name, task.algorithm.name(), original_size),
+                            (task.file_name, task.algorithm, original_size),
                             BatchItem {
                                 algorithm: task.algorithm,
                                 level: task.level,
@@ -191,7 +191,9 @@ mod binding {
 
         let mut parsed = Vec::with_capacity(tasks.len());
         for task in tasks {
-            let algorithm = Algorithm::parse(&task.algorithm)
+            let algorithm = task
+                .algorithm
+                .parse::<Algorithm>()
                 .map_err(|err| Error::new(Status::InvalidArg, err))?;
             let level = task.level.unwrap_or_else(|| algorithm.default_level());
             algorithm

@@ -97,12 +97,7 @@ fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
             item.input,
         )
     }))
-    .unwrap_or_else(|_| {
-        Err(format!(
-            "{} compression panicked unexpectedly",
-            algorithm.name()
-        ))
-    });
+    .unwrap_or_else(|_| Err(format!("{} compression panicked unexpectedly", algorithm)));
 
     match result {
         Ok(data) => {
