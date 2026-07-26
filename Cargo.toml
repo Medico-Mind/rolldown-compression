@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 brotli = "8"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
-napi = { version = "3", default-features = false, features = ["napi10"] }
+napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
 napi-derive = "3"
 rayon = "1.12"
 zstd = "0.13"
