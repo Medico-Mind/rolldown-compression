@@ -190,22 +190,22 @@ Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 #### With PGO
 | scenario                          | output   | native (rust) | node:zlib | speedup |
 |-----------------------------------|----------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 17.61s        | 36.74s    | 2.09x   |
-| gzip (level 9)                    | 9.62 MB  | 0.31s         | 0.80s     | 2.60x   |
-| gzip (level 6)                    | 9.86 MB  | 0.18s         | 0.37s     | 2.09x   |
-| brotli (quality 11)               | 5.45 MB  | 17.43s        | 36.65s    | 2.10x   |
-| brotli (quality 6)                | 9.88 MB  | 0.28s         | 0.40s     | 1.40x   |
-| zstd (level 19)                   | 5.54 MB  | 8.28s         | 14.35s    | 1.73x   |
+| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 14.63s        | 35.48s    | 2.43x   |
+| gzip (level 9)                    | 9.62 MB  | 0.29s         | 0.78s     | 2.69x   |
+| gzip (level 6)                    | 9.86 MB  | 0.18s         | 0.36s     | 1.99x   |
+| brotli (quality 11)               | 5.45 MB  | 14.27s        | 35.37s    | 2.48x   |
+| brotli (quality 6)                | 9.88 MB  | 0.22s         | 0.35s     | 1.59x   |
+| zstd (level 19)                   | 5.54 MB  | 7.42s         | 12.99s    | 1.75x   |
 
 #### Without PGO
 | scenario                          | output   | native (rust) | node:zlib | speedup |
 |-----------------------------------|----------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 18.34s        | 36.62s    | 2.00x   |
-| gzip (level 9)                    | 9.62 MB  | 0.28s         | 0.80s     | 2.85x   |
-| gzip (level 6)                    | 9.86 MB  | 0.19s         | 0.37s     | 1.93x   |
-| brotli (quality 11)               | 5.45 MB  | 19.67s        | 36.50s    | 1.86x   |
-| brotli (quality 6)                | 9.88 MB  | 0.31s         | 0.40s     | 1.27x   |
-| zstd (level 19)                   | 5.54 MB  | 8.35s         | 14.98s    | 1.79x   |
+| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 14.79s        | 35.50s    | 2.40x   |
+| gzip (level 9)                    | 9.62 MB  | 0.26s         | 0.79s     | 3.07x   |
+| gzip (level 6)                    | 9.86 MB  | 0.18s         | 0.36s     | 1.98x   |
+| brotli (quality 11)               | 5.45 MB  | 14.37s        | 35.46s    | 2.47x   |
+| brotli (quality 6)                | 9.88 MB  | 0.22s         | 0.35s     | 1.58x   |
+| zstd (level 19)                   | 5.54 MB  | 7.34s         | 13.09s    | 1.78x   |
 
 Reading these numbers honestly:
 
