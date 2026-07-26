@@ -76,8 +76,6 @@ mod binding {
     pub struct CompressWorker {
         tasks: Vec<ParsedTask>,
         buffers: Vec<Buffer>,
-        /// Dedicated pool every stage of this batch runs on.
-        pool: rayon::ThreadPool,
         skip_if_larger_or_equal: bool,
     }
 
@@ -98,63 +96,85 @@ mod binding {
             let buffers = std::mem::take(&mut self.buffers);
             let skip_if_larger_or_equal = self.skip_if_larger_or_equal;
 
-            self.pool.install(move || {
-                // Each buffer is moved into its item so the scheduler drops
-                // the reference to the JS-side allocation as soon as that item
-                // is compressed, instead of pinning every input until the
-                // batch resolves on the event loop. That consumes the input,
-                // so the reporting metadata is split off here.
-                let (metadata, items): (Vec<_>, Vec<BatchItem>) = tasks
-                    .into_par_iter()
-                    .zip(buffers)
-                    .map(|(task, buffer)| {
-                        let original_size = buffer.len() as u32;
-                        (
-                            (task.file_name, task.algorithm, original_size),
-                            BatchItem {
-                                algorithm: task.algorithm,
-                                level: task.level,
-                                window_bits: task.window_bits,
-                                section_size: task.section_size,
-                                input: buffer,
-                            },
-                        )
-                    })
-                    .unzip();
-
-                let outcomes = run_batch(items, skip_if_larger_or_equal);
-
-                Ok(metadata
-                    .into_par_iter()
-                    .zip(outcomes)
-                    .map(
-                        |((file_name, algorithm, original_size), outcome)| WorkerOutcome {
-                            file_name,
-                            algorithm,
-                            original_size,
-                            outcome,
+            // Each buffer is moved into its item so the scheduler drops the
+            // reference to the JS-side allocation as soon as that item is
+            // compressed, instead of pinning every input until the batch
+            // resolves on the event loop. That consumes the input, so the
+            // reporting metadata is split off here.
+            let (metadata, items): (Vec<_>, Vec<BatchItem>) = tasks
+                .into_par_iter()
+                .zip(buffers)
+                .map(|(task, buffer)| {
+                    let original_size = buffer.len() as u32;
+                    (
+                        (task.file_name, task.algorithm, original_size),
+                        BatchItem {
+                            algorithm: task.algorithm,
+                            level: task.level,
+                            window_bits: task.window_bits,
+                            section_size: task.section_size,
+                            input: buffer,
                         },
                     )
-                    .collect())
-            })
+                })
+                .unzip();
+
+            let outcomes = run_batch(items, skip_if_larger_or_equal);
+
+            Ok(metadata
+                .into_par_iter()
+                .zip(outcomes)
+                .map(
+                    |((file_name, algorithm, original_size), outcome)| WorkerOutcome {
+                        file_name,
+                        algorithm,
+                        original_size,
+                        outcome,
+                    },
+                )
+                .collect())
         }
 
         fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-            Ok(self.pool.install(move || {
-                output
-                    .into_par_iter()
-                    .map(|result| CompressResult {
-                        file_name: result.file_name,
-                        algorithm: result.algorithm.to_string(),
-                        compressed_size: result.outcome.data.len() as u32,
-                        data: result.outcome.data.into(),
-                        original_size: result.original_size,
-                        skipped: result.outcome.skipped,
-                        error: result.outcome.error,
-                    })
-                    .collect()
-            }))
+            Ok(output
+                .into_par_iter()
+                .map(|result| CompressResult {
+                    file_name: result.file_name,
+                    algorithm: result.algorithm.to_string(),
+                    compressed_size: result.outcome.data.len() as u32,
+                    data: result.outcome.data.into(),
+                    original_size: result.original_size,
+                    skipped: result.outcome.skipped,
+                    error: result.outcome.error,
+                })
+                .collect())
         }
+    }
+
+    /// Guards the one and only `build_global` attempt of this process.
+    static GLOBAL_POOL: std::sync::Once = std::sync::Once::new();
+
+    /// Size rayon's global pool to `concurrency` threads.
+    ///
+    /// The global pool can only be built once per process, so the first batch
+    /// that requests an explicit concurrency wins and every later request is a
+    /// no-op — including one asking for a different thread count. Without an
+    /// explicit concurrency the pool keeps rayon's default sizing, one thread
+    /// per logical CPU.
+    ///
+    /// A pool that cannot be configured is not fatal: compression still runs
+    /// on whatever global pool exists, so the failure is only warned about.
+    fn configure_global_pool(concurrency: usize) {
+        GLOBAL_POOL.call_once(|| {
+            if let Err(err) = rayon::ThreadPoolBuilder::new()
+                .num_threads(concurrency)
+                .build_global()
+            {
+                eprintln!(
+                    "warning: could not size the compression thread pool to {concurrency} threads ({err}); using the default pool instead"
+                );
+            }
+        });
     }
 
     /// Compress a batch of buffers off the JS main thread.
@@ -221,29 +241,19 @@ mod binding {
         let concurrency = options
             .as_ref()
             .and_then(|options| options.concurrency)
-            .unwrap_or(0) as usize;
+            .filter(|concurrency| *concurrency > 0);
         let skip_if_larger_or_equal = options
             .as_ref()
             .and_then(|options| options.skip_if_larger_or_equal)
             .unwrap_or(false);
 
-        // Built here rather than in `compute` so the worker thread spends all
-        // of its time compressing. `num_threads(0)` is rayon's default sizing,
-        // one thread per logical CPU.
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(concurrency)
-            .build()
-            .map_err(|err| {
-                Error::new(
-                    Status::GenericFailure,
-                    format!("failed to create the compression thread pool: {err}"),
-                )
-            })?;
+        if let Some(concurrency) = concurrency {
+            configure_global_pool(concurrency as usize);
+        }
 
         Ok(AsyncTask::new(CompressWorker {
             tasks: parsed,
             buffers,
-            pool,
             skip_if_larger_or_equal,
         }))
     }

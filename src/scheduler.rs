@@ -38,9 +38,9 @@ pub struct BatchOutcome {
 
 /// Run every item of the batch in parallel and return outcomes in input order.
 ///
-/// Work runs on the caller's ambient rayon pool: call this from inside
-/// [`rayon::ThreadPool::install`] to pin the batch to a dedicated pool,
-/// otherwise it lands on the global one.
+/// Work runs on the caller's ambient rayon pool: the global one unless the
+/// caller wraps this in [`rayon::ThreadPool::install`] to pin the batch to a
+/// dedicated pool.
 ///
 /// * `skip_if_larger_or_equal` — mark items whose compressed size would be
 ///   `>=` the input size as skipped instead of returning the bloated output.
