@@ -1,6 +1,6 @@
 {
   "name": "@medicomind/rolldown-compression-wasm32-wasi",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "cpu": [
     "wasm32"
   ],

@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 2.1.4
+
+### Patch Changes
+
+- [`5f34992`](https://github.com/Medico-Mind/rolldown-compression/commit/5f34992b6603ed6b5ed9363db1c7b369ed9c7d13) Thanks [@Mnwa](https://github.com/Mnwa)! - Simplify batch processing. Remove sort and max_len from tasks preprocessing.
+
+- [`a1dee03`](https://github.com/Medico-Mind/rolldown-compression/commit/a1dee03460cb514d519ac942e534393efc1d7978) Thanks [@Mnwa](https://github.com/Mnwa)! - Use global pool for brotli worker pools. Return compress multi for windows
+
 ## 2.1.3
 
 ### Patch Changes
