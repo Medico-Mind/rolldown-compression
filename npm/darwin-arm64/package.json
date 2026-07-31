@@ -1,6 +1,6 @@
 {
   "name": "@medicomind/rolldown-compression-darwin-arm64",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "cpu": [
     "arm64"
   ],

@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.1.5
+
+### Patch Changes
+
+- [`e7afef7`](https://github.com/Medico-Mind/rolldown-compression/commit/e7afef7d58f4c3b9f8355f2e723a20001c365d72) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix dropping brotli worker pool when panic occured
+
 ## 2.1.4
 
 ### Patch Changes
