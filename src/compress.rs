@@ -11,11 +11,13 @@ use brotli::enc::{
     BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
     UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
 };
+use crossbeam_deque::{Injector, Steal};
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::Write;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
 /// production, a plain `Vec<u8>` under `cargo test`. Both hand out `&[u8]`
@@ -187,23 +189,43 @@ type BrotliWorkerPool = WorkerPool<
     (SharedInput, BrotliEncoderParams),
 >;
 
+/// Cache of idle brotli worker pools, shared by every rayon worker that hits
+/// the sectioned path. Spinning a pool up costs OS thread spawns, so pools are
+/// checked out for the duration of one compression and returned afterwards
+/// rather than rebuilt per input.
+///
+/// Backed by a lock-free [`Injector`]: checkout/return happen on every large
+/// input from all rayon workers at once, and the queue is unordered by nature
+/// (any idle pool will do), so there is nothing for a mutex to protect.
 #[derive(Default)]
 struct BrotliWorkerPoolPool {
-    queue: Mutex<Vec<BrotliWorkerPool>>,
+    queue: Injector<BrotliWorkerPool>,
 }
 
 impl BrotliWorkerPoolPool {
-    fn pop(&self) -> BrotliWorkerPool {
-        self.queue.lock().unwrap().pop().unwrap_or_else(|| {
-            let threads = std::thread::available_parallelism()
-                .map_or(1, |n| n.get())
-                .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-            new_work_pool(threads.saturating_sub(1))
-        })
+    fn with_mut<T>(
+        &self,
+        callback: impl FnOnce(&mut BrotliWorkerPool) -> T,
+    ) -> std::thread::Result<T> {
+        let mut pool = self.pop();
+        let res = catch_unwind(AssertUnwindSafe(|| callback(&mut pool)));
+        self.queue.push(pool);
+        res
     }
-
-    fn push(&self, worker_pool: BrotliWorkerPool) {
-        self.queue.lock().unwrap().push(worker_pool);
+    fn pop(&self) -> BrotliWorkerPool {
+        loop {
+            match self.queue.steal() {
+                Steal::Success(worker_pool) => return worker_pool,
+                // A concurrent push/steal raced us; the queue may still hold a
+                // pool, so retry rather than pay for a fresh one.
+                Steal::Retry => std::thread::yield_now(),
+                Steal::Empty => break,
+            }
+        }
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+        new_work_pool(threads.saturating_sub(1))
     }
 }
 
@@ -242,12 +264,14 @@ fn compress_brotli(
     };
     if input_len >= 4 * section_size {
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        // `force_mut` spins the pool up on the first qualifying input; the
-        // threads persist for the rayon worker's lifetime after that.
-        let mut pool = BROTLI_WORKER_POOL_POOL.pop();
-        let result = compress_brotli_pooled(&params, num_sections, &mut pool, SharedInput(input));
-        BROTLI_WORKER_POOL_POOL.push(pool);
-        result
+        // Check a pool out for the duration of this compression and hand it
+        // back afterwards; its threads outlive the call and get reused by
+        // whichever rayon worker claims the pool next.
+        BROTLI_WORKER_POOL_POOL
+            .with_mut(|pool| {
+                compress_brotli_pooled(&params, num_sections, pool, SharedInput(input))
+            })
+            .map_err(|_| "brotli compression failed: panic handled".to_string())?
     } else {
         compress_brotli_single(&params, input.as_ref())
     }

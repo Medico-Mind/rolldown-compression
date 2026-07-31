@@ -413,6 +413,7 @@ name = "rolldown-compression"
 version = "0.1.0"
 dependencies = [
  "brotli",
+ "crossbeam-deque",
  "flate2",
  "mimalloc",
  "napi",
