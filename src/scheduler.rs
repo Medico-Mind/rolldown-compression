@@ -48,38 +48,14 @@ pub struct BatchOutcome {
 /// A failure (or panic) of a single item never aborts the batch; it is
 /// reported through [`BatchOutcome::error`].
 pub fn run_batch(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
-    let mut outcomes: Vec<BatchOutcome> = vec![Default::default(); items.len()];
+    let mut outcomes: Vec<BatchOutcome> = Vec::with_capacity(items.len());
 
-    let mut tasks: Vec<(BatchItem, &mut BatchOutcome)> =
-        items.into_iter().zip(outcomes.iter_mut()).collect();
-
-    tasks.par_sort_unstable_by_key(|(item, _)| std::cmp::Reverse(estimated_cost(item)));
-
-    tasks
+    items
         .into_par_iter()
-        .with_max_len(1)
-        .for_each(|(item, slot)| *slot = run_one(item, skip_if_larger_or_equal));
+        .map(|item| run_one(item, skip_if_larger_or_equal))
+        .collect_into_vec(&mut outcomes);
 
     outcomes
-}
-
-/// Rough relative CPU cost of an item, used only for scheduling order.
-/// Derived from measured per-byte throughput of each algorithm/level class.
-fn estimated_cost(item: &BatchItem) -> u64 {
-    let weight = match item.algorithm {
-        Algorithm::Gzip => 1 + u64::from(item.level) / 3,
-        Algorithm::Brotli => match item.level {
-            10.. => 60,
-            7..=9 => 12,
-            _ => 4,
-        },
-        Algorithm::Zstd => match item.level {
-            18.. => 16,
-            10..=17 => 6,
-            _ => 2,
-        },
-    };
-    item.input.len() as u64 * weight
 }
 
 fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
@@ -100,21 +76,16 @@ fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
     .unwrap_or_else(|_| Err(format!("{} compression panicked unexpectedly", algorithm)));
 
     match result {
-        Ok(data) => {
-            if skip_if_larger_or_equal && data.len() >= input_len {
-                BatchOutcome {
-                    data: Vec::new(),
-                    skipped: true,
-                    error: None,
-                }
-            } else {
-                BatchOutcome {
-                    data,
-                    skipped: false,
-                    error: None,
-                }
-            }
-        }
+        Ok(data) if skip_if_larger_or_equal && data.len() >= input_len => BatchOutcome {
+            data: Vec::new(),
+            skipped: true,
+            error: None,
+        },
+        Ok(data) => BatchOutcome {
+            data,
+            skipped: false,
+            error: None,
+        },
         Err(error) => BatchOutcome {
             data: Vec::new(),
             skipped: false,
