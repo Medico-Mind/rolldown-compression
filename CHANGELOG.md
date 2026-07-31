@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.1.7
+
+### Patch Changes
+
+- [`addbfa5`](https://github.com/Medico-Mind/rolldown-compression/commit/addbfa564547d9553eef6c29633d4df6b0f44389) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix build
+
 ## 2.1.6
 
 ### Patch Changes
