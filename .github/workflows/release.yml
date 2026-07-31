@@ -234,6 +234,16 @@ jobs:
       # artifact source" as soon as the directory holds some but not all of
       # them, instead of falling through to another candidate. The debug
       # wasm build is excluded — it is never published.
+      # index.js (the napi binding loader, also committed) must be uploaded
+      # too: `napi artifacts` >= 3.8 reads `managedRootEntries` from the WASI
+      # loader's metadata header — ["browser.js", "index.js", …] — and deletes
+      # every entry it does not rewrite during that run. It looks for the root
+      # entry in each native bindings directory first, so shipping index.js
+      # alongside the *.node files makes it rewrite (instead of delete) it.
+      # Without this it stops at package.json `main` (dist/index.cjs, produced
+      # by build:ts) and index.js is deleted just before `npm publish` — which
+      # is how 2.1.5/2.1.6 shipped without it, breaking the `require`
+      # of ../index.js in dist/index.cjs at runtime.
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.settings.target }}
@@ -245,6 +255,7 @@ jobs:
             *.wasi*.d.cts
             *.wasi*-browser.js
             wasi-worker*.mjs
+            index.js
           if-no-files-found: error
 
   publish:
@@ -276,6 +287,17 @@ jobs:
           --build-output-dir artifacts/bindings-wasm32-wasip1-threads
       - name: List packages
         run: ls -R npm
+      # Guard against a root-package entry point silently disappearing again:
+      # a package published without index.js installs cleanly and only fails
+      # when the plugin is first imported, so nothing else catches it.
+      - name: Verify root package entry points
+        run: |
+          for file in index.js index.d.ts dist/index.cjs dist/index.mjs dist/index.d.cts dist/index.d.mts; do
+            if [ ! -f "$file" ]; then
+              echo "::error::${file} is missing from the package root, refusing to publish"
+              exit 1
+            fi
+          done
       # The published root package must declare every npm/* platform package
       # in optionalDependencies — publishing runs with --ignore-scripts, so
       # `napi prepublish` never writes them (0.3.1 shipped without any and
