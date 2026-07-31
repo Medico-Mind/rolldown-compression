@@ -1,6 +1,6 @@
 {
   "name": "@medicomind/rolldown-compression-linux-x64-musl",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "cpu": [
     "x64"
   ],
