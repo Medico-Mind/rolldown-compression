@@ -5,20 +5,17 @@
 //! harness never references Node-API symbols (they only exist inside a
 //! Node.js process).
 
-#[cfg(not(windows))]
 use brotli::enc::threading::{Owned, SendAlloc};
 use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
-#[cfg(not(windows))]
 use brotli::enc::{
     BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
     UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
 };
-#[cfg(not(windows))]
-use std::cell::LazyCell;
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::Write;
 use std::str::FromStr;
+use std::sync::{LazyLock, Mutex};
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
 /// production, a plain `Vec<u8>` under `cargo test`. Both hand out `&[u8]`
@@ -41,9 +38,7 @@ pub enum Algorithm {
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
-#[cfg(not(windows))]
 const BROTLI_MIN_THREADS: usize = 2;
-#[cfg(not(windows))]
 const BROTLI_MAX_THREADS: usize = 4;
 
 impl Algorithm {
@@ -177,17 +172,14 @@ fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
 /// worker threads and therefore cannot borrow it. Newtype because the orphan
 /// rule forbids implementing brotli's `SliceWrapper` for [`InputBuffer`]
 /// directly.
-#[cfg(not(windows))]
 struct SharedInput(InputBuffer);
 
-#[cfg(not(windows))]
 impl SliceWrapper<u8> for SharedInput {
     fn slice(&self) -> &[u8] {
         self.0.as_ref()
     }
 }
 
-#[cfg(not(windows))]
 type BrotliWorkerPool = WorkerPool<
     CompressionThreadResult<StandardAlloc>,
     UnionHasher<StandardAlloc>,
@@ -195,20 +187,28 @@ type BrotliWorkerPool = WorkerPool<
     (SharedInput, BrotliEncoderParams),
 >;
 
-#[cfg(not(windows))]
-thread_local! {
-    /// Per-worker-thread brotli pool plus the section budget it was sized
-    /// for. Not available on Windows: `WorkerPool::drop` joins its threads,
-    /// and a `thread_local` is dropped in a TLS destructor, which on Windows
-    /// runs under the loader lock — the joined thread cannot exit without
-    /// that same lock, deadlocking the process (rust-lang/rust#74875).
-    static BROTLI_WORKER_POOL: RefCell<LazyCell<BrotliWorkerPool>> = RefCell::new(LazyCell::new(|| {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        // The calling thread compresses the last section itself, so a budget
-        // of `threads` sections needs only `threads - 1` pool workers.
-        new_work_pool(threads.saturating_sub(1))
-    }));
+#[derive(Default)]
+struct BrotliWorkerPoolPool {
+    queue: Mutex<Vec<BrotliWorkerPool>>,
 }
+
+impl BrotliWorkerPoolPool {
+    fn pop(&self) -> BrotliWorkerPool {
+        self.queue.lock().unwrap().pop().unwrap_or_else(|| {
+            let threads = std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
+            new_work_pool(threads.saturating_sub(1))
+        })
+    }
+
+    fn push(&self, worker_pool: BrotliWorkerPool) {
+        self.queue.lock().unwrap().push(worker_pool);
+    }
+}
+
+static BROTLI_WORKER_POOL_POOL: LazyLock<BrotliWorkerPoolPool> =
+    LazyLock::new(BrotliWorkerPoolPool::default);
 
 /// Compress large inputs by splitting them into ~`section_size` sections
 /// spread over the per-thread worker pool; smaller inputs stay in one
@@ -240,23 +240,17 @@ fn compress_brotli(
         size_hint: input_len,
         ..Default::default()
     };
-    #[cfg(not(windows))]
     if input_len >= 4 * section_size {
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
         // `force_mut` spins the pool up on the first qualifying input; the
         // threads persist for the rayon worker's lifetime after that.
-        return BROTLI_WORKER_POOL.with_borrow_mut(|cell| {
-            compress_brotli_pooled(
-                &params,
-                num_sections,
-                LazyCell::force_mut(cell),
-                SharedInput(input),
-            )
-        });
+        let mut pool = BROTLI_WORKER_POOL_POOL.pop();
+        let result = compress_brotli_pooled(&params, num_sections, &mut pool, SharedInput(input));
+        BROTLI_WORKER_POOL_POOL.push(pool);
+        result
+    } else {
+        compress_brotli_single(&params, input.as_ref())
     }
-    #[cfg(windows)]
-    let _ = section_size;
-    compress_brotli_single(&params, input.as_ref())
 }
 
 fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
@@ -267,7 +261,6 @@ fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<
     Ok(output)
 }
 
-#[cfg(not(windows))]
 fn compress_brotli_pooled(
     params: &BrotliEncoderParams,
     num_sections: usize,
@@ -457,7 +450,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
     fn worker_pool_round_trips_multi_section_inputs() {
         // The global pool's section budget depends on which test initializes
         // it first, so pin a dedicated pool to guarantee multi-section
@@ -480,7 +472,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
     fn multithreaded_path_engages_for_large_inputs() {
         // Sectioned output has different block boundaries than a single
         // stream, so equality with the single-threaded encoder means the
@@ -585,7 +576,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
     fn derives_default_section_size_from_window_bits() {
         // With no explicit section size the default is one window
         // (2^windowBits bytes), so windowBits 18 gives 256 KiB sections and
