@@ -227,10 +227,13 @@ jobs:
         run: ${{ matrix.settings.build }}
         shell: bash
       # Native targets produce one *.node file; the wasm target produces the
-      # *.wasm binary plus the JS glue (loader, browser entry, workers) that
-      # `napi artifacts --build-output-dir` copies into npm/wasm32-wasi at
-      # publish time. The debug wasm build is excluded — it is never
-      # published.
+      # *.wasm binary plus the JS glue (loader, type declaration, browser
+      # entry, workers) that `napi artifacts --build-output-dir` copies into
+      # npm/wasm32-wasi at publish time. Every file `requiredWasiFiles` in
+      # the napi CLI looks for must be uploaded: it throws "Incomplete
+      # artifact source" as soon as the directory holds some but not all of
+      # them, instead of falling through to another candidate. The debug
+      # wasm build is excluded — it is never published.
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.settings.target }}
@@ -238,8 +241,9 @@ jobs:
             *.node
             *.wasm
             !*.debug.wasm
-            *.wasi.cjs
-            *.wasi-browser.js
+            *.wasi*.cjs
+            *.wasi*.d.cts
+            *.wasi*-browser.js
             wasi-worker*.mjs
           if-no-files-found: error
 
