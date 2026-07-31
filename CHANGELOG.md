@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.1.6
+
+### Patch Changes
+
+- [`8b3049d`](https://github.com/Medico-Mind/rolldown-compression/commit/8b3049dd365856bd85c9553e4de79e35449b6769) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix deploy miss index.js
+
 ## 2.1.5
 
 ### Patch Changes
