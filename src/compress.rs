@@ -285,7 +285,12 @@ fn compress_brotli(
 }
 
 thread_local! {
-    static BROTLI_BUFFER: RefCell<[u8; BROTLI_BUFFER_SIZE * 2]> = const { RefCell::new([0; BROTLI_BUFFER_SIZE * 2]) };
+    /// Scratch space for `BrotliCompressCustomAlloc`, split into an input and an
+    /// output half. Heap-backed on purpose: this crate is a `cdylib` loaded with
+    /// `dlopen`, and an inline `[u8; 8192]` blows past glibc's static TLS surplus
+    /// ("cannot allocate memory in static TLS block") once mimalloc has taken its
+    /// share, so the binding fails to load at all on linux-gnu.
+    static BROTLI_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0; BROTLI_BUFFER_SIZE * 2]);
 }
 
 fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
