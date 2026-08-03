@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 2.1.8
+
+### Patch Changes
+
+- [`f15e4b4`](https://github.com/Medico-Mind/rolldown-compression/commit/f15e4b4ed61eec6ea449ef61a08518b6cf5f5541) Thanks [@Mnwa](https://github.com/Mnwa)! - Reduce allocations in the native compression path: gzip now compresses through a buffered reader with a tighter worst-case output bound, and brotli reuses thread-local scratch buffers instead of allocating them per call.
+
+- [`3ff01c1`](https://github.com/Medico-Mind/rolldown-compression/commit/3ff01c1272ee5c618b746f39b0e8493203206b29) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix the published `wasm32-wasi` package manifest, which had drifted behind the napi-rs CLI: it no longer declares `cpu: ["wasm32"]` (the WASI binding runs on any host architecture), now declares `type: module` for its loaders, ships and points `types` at `rolldown-compression.wasi.d.cts`, and pins the `@emnapi/core` / `@emnapi/runtime` versions the binding is actually built against.
+
 ## 2.1.7
 
 ### Patch Changes
