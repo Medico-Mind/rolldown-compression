@@ -14,7 +14,7 @@ use brotli::enc::{
 use crossbeam_deque::{Injector, Steal};
 use std::cell::RefCell;
 use std::fmt::Display;
-use std::io::Write;
+use std::io::Read;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::str::FromStr;
 use std::sync::LazyLock;
@@ -42,6 +42,7 @@ pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
 const BROTLI_MIN_THREADS: usize = 2;
 const BROTLI_MAX_THREADS: usize = 4;
+const BROTLI_BUFFER_SIZE: usize = 4096;
 
 impl Algorithm {
     pub fn default_level(self) -> u32 {
@@ -157,17 +158,23 @@ pub fn compress(
     Ok(output)
 }
 
+/// Calculates the maximum upper bound of bytes required to safely hold
+/// compressed data in the standard gzip format for a given input length.
+///
+/// This formula accounts for the worst-case DEFLATE overhead (~0.03%)
+/// plus the standard 18-byte gzip header and trailer (12 bytes larger than zlib).
+/// It assumes a minimal header with no optional metadata (like filenames).
+fn gzip_compress_bound_formula(source_len: usize) -> usize {
+    source_len + (source_len >> 12) + (source_len >> 14) + (source_len >> 25) + 25
+}
+
 fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
-    // deflate's worst case is stored blocks: 5 bytes per 16 KiB block plus
-    // the 18-byte gzip container. len/1000 over-covers the block overhead,
-    // so the buffer never reallocates mid-compression.
-    let bound = input.len() + input.len() / 1000 + 64;
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::with_capacity(bound), flate2::Compression::new(level));
+    let mut output = Vec::with_capacity(gzip_compress_bound_formula(input.len()));
+    let mut encoder = flate2::GzBuilder::new().buf_read(input, flate2::Compression::new(level));
     encoder
-        .write_all(input)
-        .and_then(|_| encoder.finish())
-        .map_err(|err| format!("gzip compression failed: {err}"))
+        .read_to_end(&mut output)
+        .map_err(|err| format!("gzip compression failed: {err}"))?;
+    Ok(output)
 }
 
 /// Owned input for `compress_worker_pool`, which shares the buffer across
@@ -277,10 +284,25 @@ fn compress_brotli(
     }
 }
 
+thread_local! {
+    static BROTLI_BUFFER: RefCell<[u8; BROTLI_BUFFER_SIZE * 2]> = const { RefCell::new([0; BROTLI_BUFFER_SIZE * 2]) };
+}
+
 fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
     let mut reader = input;
-    brotli::BrotliCompress(&mut reader, &mut output, params)
+    BROTLI_BUFFER
+        .with_borrow_mut(|buffer| {
+            let (input_buf, output_buf) = buffer.split_at_mut(BROTLI_BUFFER_SIZE);
+            brotli::BrotliCompressCustomAlloc(
+                &mut reader,
+                &mut output,
+                input_buf,
+                output_buf,
+                params,
+                StandardAlloc::default(),
+            )
+        })
         .map_err(|err| format!("brotli compression failed: {err}"))?;
     Ok(output)
 }

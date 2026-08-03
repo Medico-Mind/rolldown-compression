@@ -185,33 +185,34 @@ after:  npm run build  537.24s user 5.59s system 740% cpu 1:13.29 total
 
 `npm run bench` (or `node benchmark/index.mjs --quick`) generates a dist-shaped fixture set — 202 files / ~85 MB with a long-tail size distribution, including two monolithic >16 MiB bundles that exercise the multithreaded brotli path — and compresses it with the native core vs `node:zlib` driven at full parallelism via `Promise.all` (the reference plugin's best case). Both sides always use the same levels.
 
-Results on an Apple M1 Pro (10 cores), Node 26, default `UV_THREADPOOL_SIZE`:
+Results on an Apple M5 Pro (18 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 
 #### With PGO
 | scenario                          | output   | native (rust) | node:zlib | speedup |
 |-----------------------------------|----------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 14.63s        | 35.48s    | 2.43x   |
-| gzip (level 9)                    | 9.62 MB  | 0.29s         | 0.78s     | 2.69x   |
-| gzip (level 6)                    | 9.86 MB  | 0.18s         | 0.36s     | 1.99x   |
-| brotli (quality 11)               | 5.45 MB  | 14.27s        | 35.37s    | 2.48x   |
-| brotli (quality 6)                | 9.88 MB  | 0.22s         | 0.35s     | 1.59x   |
-| zstd (level 19)                   | 5.54 MB  | 7.42s         | 12.99s    | 1.75x   |
+| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 7.06s         | 23.57s    | 3.34x   |
+| gzip (level 9)                    | 9.62 MB  | 0.18s         | 0.53s     | 2.93x   |
+| gzip (level 6)                    | 9.86 MB  | 0.11s         | 0.24s     | 2.08x   |
+| brotli (quality 11)               | 5.45 MB  | 6.91s         | 23.43s    | 3.39x   |
+| brotli (quality 6)                | 9.88 MB  | 0.12s         | 0.23s     | 1.99x   |
+| zstd (level 19)                   | 5.54 MB  | 5.03s         | 8.41s     | 1.67x   |
 
 #### Without PGO
 | scenario                          | output   | native (rust) | node:zlib | speedup |
 |-----------------------------------|----------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 14.79s        | 35.50s    | 2.40x   |
-| gzip (level 9)                    | 9.62 MB  | 0.26s         | 0.79s     | 3.07x   |
-| gzip (level 6)                    | 9.86 MB  | 0.18s         | 0.36s     | 1.98x   |
-| brotli (quality 11)               | 5.45 MB  | 14.37s        | 35.46s    | 2.47x   |
-| brotli (quality 6)                | 9.88 MB  | 0.22s         | 0.35s     | 1.58x   |
-| zstd (level 19)                   | 5.54 MB  | 7.34s         | 13.09s    | 1.78x   |
+| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 6.55s         | 23.58s    | 3.60x   |
+| gzip (level 9)                    | 9.62 MB  | 0.16s         | 0.54s     | 3.31x   |
+| gzip (level 6)                    | 9.86 MB  | 0.11s         | 0.24s     | 2.06x   |
+| brotli (quality 11)               | 5.45 MB  | 6.62s         | 23.61s    | 3.56x   |
+| brotli (quality 6)                | 9.88 MB  | 0.11s         | 0.23s     | 2.04x   |
+| zstd (level 19)                   | 5.54 MB  | 5.06s         | 8.43s     | 1.67x   |
 
 Reading these numbers honestly:
 
 - **gzip** and **zstd** are faster per core ([zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), ~2.4x faster per core than node's bundled zlib in our measurements; libzstd) *and* use every core, while `node:zlib` is capped at `UV_THREADPOOL_SIZE` (default 4) threads. The two >16 MiB bundles temper the headline numbers: neither algorithm has a sectioned mode, so each giant file occupies a single thread on both sides and that tail runs at the per-core ratio rather than the thread-count ratio.
 - **brotli at quality 11** is the bound on the combined number: the Rust `brotli` crate is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the speedup is parallelism — every core against `UV_THREADPOOL_SIZE` threads across the many small files, plus the sectioned worker pool (4 x 4 MiB sections) on the >16 MiB bundles that `node:zlib` has to compress one thread per file.
-- The speedup grows with core count and shrinks if you raise `UV_THREADPOOL_SIZE` for the JS side — the benchmark prints both so runs are comparable.
+- The speedup grows with core count and shrinks if you raise `UV_THREADPOOL_SIZE` for the JS side — the benchmark prints both so runs are comparable. The 10-core M1 Pro these tables previously covered landed around 2.4x on the combined scenario; the 18-core M5 Pro reaches 3.3–3.6x against the same 4-thread JS side.
+- The two tables above are single runs of each binding, so the small differences *between* them are run-to-run noise, not a PGO effect — see [PGO / BOLT builds](#pgo--bolt-builds) for an interleaved median comparison of the same two binaries.
 
 ### PGO / BOLT builds
 
@@ -231,7 +232,7 @@ Reading these numbers honestly:
 | baseline       | plain `--release` (fat LTO, `codegen-units = 1`)           |
 | pgo / pgo+bolt | same flags plus `-Cprofile-use` (and BOLT layout on Linux) |
 
-Expect modest gains: the baseline already ships fat LTO with `codegen-units = 1`, so PGO adds a few percent on the compression-heavy scenarios (~1.1x on the brotli quality 11 run on an M1 Pro) and is within noise on sub-second ones. Sub-second scenario deltas in the table are measurement noise, not regressions.
+Expect modest gains at best: the baseline already ships fat LTO with `codegen-units = 1`, so there is little left for PGO to find. On an M5 Pro the interleaved medians come out at parity (0.98x–1.02x across the compression-heavy scenarios); an earlier M1 Pro run measured ~1.1x on brotli quality 11. Treat single-digit-percent deltas in either direction — and every sub-second scenario — as measurement noise rather than a real speedup or regression.
 
 The release workflow builds every published binary with PGO. Cross-compiled targets run the training workload through an emulation layer — x64 Node under Rosetta 2 for `x86_64-apple-darwin`, an arm64 Node container under QEMU for `aarch64-unknown-linux-gnu`, and an Alpine container for musl — so each target trains on its own instrumented binding.
 
