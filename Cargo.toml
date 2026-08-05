@@ -23,7 +23,6 @@ hotpath-alloc = ["hotpath/hotpath-alloc"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = "0.1"
-zstd = { version = "0.13", default-features = false, features = ["fat-lto"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 zstd = { version = "0.13", default-features = false, features = ["no_asm"] }
