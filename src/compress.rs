@@ -130,6 +130,7 @@ pub fn validate_section_size(section_size: u32) -> Result<(), String> {
 /// Takes ownership of the input so brotli's multithreaded path can share it
 /// across worker threads without copying; it is dropped as soon as
 /// compression finishes.
+#[hotpath::measure]
 pub fn compress(
     algorithm: Algorithm,
     level: u32,
@@ -168,9 +169,15 @@ fn gzip_compress_bound_formula(source_len: usize) -> usize {
     source_len + (source_len >> 12) + (source_len >> 14) + (source_len >> 25) + 25
 }
 
+#[hotpath::measure]
 fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(gzip_compress_bound_formula(input.len()));
-    let mut encoder = flate2::GzBuilder::new().buf_read(input, flate2::Compression::new(level));
+    // Read-side encoder: every `read` deflates, so the wrapper reports real
+    // compression work and compressed bytes out rather than buffered writes.
+    let mut encoder = hotpath::io!(
+        flate2::GzBuilder::new().buf_read(input, flate2::Compression::new(level)),
+        label = "gzip-deflate"
+    );
     encoder
         .read_to_end(&mut output)
         .map_err(|err| format!("gzip compression failed: {err}"))?;
@@ -219,6 +226,7 @@ impl BrotliWorkerPoolPool {
         self.queue.push(pool);
         res
     }
+    #[hotpath::measure(label = "brotli_worker_pool_checkout")]
     fn pop(&self) -> BrotliWorkerPool {
         loop {
             match self.queue.steal() {
@@ -256,6 +264,7 @@ static BROTLI_WORKER_POOL_POOL: LazyLock<BrotliWorkerPoolPool> =
 /// dropping one there deadlocks — TLS destructors run under the Windows
 /// loader lock, and `WorkerPool::drop` joins worker threads that cannot exit
 /// without that same lock (rust-lang/rust#74875).
+#[hotpath::measure]
 fn compress_brotli(
     quality: u32,
     window_bits: u32,
@@ -293,6 +302,7 @@ thread_local! {
     static BROTLI_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0; BROTLI_BUFFER_SIZE * 2]);
 }
 
+#[hotpath::measure]
 fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
     let mut reader = input;
@@ -312,6 +322,7 @@ fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<
     Ok(output)
 }
 
+#[hotpath::measure]
 fn compress_brotli_pooled(
     params: &BrotliEncoderParams,
     num_sections: usize,
@@ -344,6 +355,7 @@ thread_local! {
         RefCell::new((i32::MIN, zstd::bulk::Compressor::default()));
 }
 
+#[hotpath::measure]
 fn compress_zstd(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
     ZSTD_CONTEXT.with_borrow_mut(|(current_level, compressor)| {
         let level = level as i32;

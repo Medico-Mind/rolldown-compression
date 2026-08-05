@@ -3,9 +3,17 @@
 pub mod compress;
 pub mod scheduler;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), not(feature = "hotpath-alloc")))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+// `hotpath-alloc` counts allocations at the global allocator, so it has to sit
+// in front of mimalloc rather than replace it: registered the other way round
+// every allocation bypasses the counter and the report reads 0 B throughout.
+#[cfg(all(not(target_family = "wasm"), feature = "hotpath-alloc"))]
+#[global_allocator]
+static GLOBAL: hotpath::CountingAllocator<mimalloc::MiMalloc> =
+    hotpath::CountingAllocator::with(mimalloc::MiMalloc);
 
 // The napi glue references Node-API symbols that only exist inside a Node.js
 // process, so it is compiled out of the `cargo test` harness. All logic worth
@@ -101,23 +109,26 @@ mod binding {
             // compressed, instead of pinning every input until the batch
             // resolves on the event loop. That consumes the input, so the
             // reporting metadata is split off here.
-            let (metadata, items): (Vec<_>, Vec<BatchItem>) = tasks
-                .into_par_iter()
-                .zip(buffers)
-                .map(|(task, buffer)| {
-                    let original_size = buffer.len() as u32;
-                    (
-                        (task.file_name, task.algorithm, original_size),
-                        BatchItem {
-                            algorithm: task.algorithm,
-                            level: task.level,
-                            window_bits: task.window_bits,
-                            section_size: task.section_size,
-                            input: buffer,
-                        },
-                    )
-                })
-                .unzip();
+            let (metadata, items): (Vec<_>, Vec<BatchItem>) =
+                hotpath::measure_block!("CompressWorker::split_tasks", {
+                    tasks
+                        .into_par_iter()
+                        .zip(buffers)
+                        .map(|(task, buffer)| {
+                            let original_size = buffer.len() as u32;
+                            (
+                                (task.file_name, task.algorithm, original_size),
+                                BatchItem {
+                                    algorithm: task.algorithm,
+                                    level: task.level,
+                                    window_bits: task.window_bits,
+                                    section_size: task.section_size,
+                                    input: buffer,
+                                },
+                            )
+                        })
+                        .unzip()
+                });
 
             let outcomes = run_batch(items, skip_if_larger_or_equal);
 
@@ -136,20 +147,44 @@ mod binding {
         }
 
         fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-            Ok(output
-                .into_par_iter()
-                .map(|result| CompressResult {
-                    file_name: result.file_name,
-                    algorithm: result.algorithm.to_string(),
-                    compressed_size: result.outcome.data.len() as u32,
-                    data: result.outcome.data.into(),
-                    original_size: result.original_size,
-                    skipped: result.outcome.skipped,
-                    error: result.outcome.error,
-                })
-                .collect())
+            // Handing the compressed bytes back to JS allocates a Node buffer
+            // per result, so it is worth watching next to the compression
+            // itself.
+            Ok(hotpath::measure_block!("CompressWorker::resolve", {
+                output
+                    .into_par_iter()
+                    .map(|result| CompressResult {
+                        file_name: result.file_name,
+                        algorithm: result.algorithm.to_string(),
+                        compressed_size: result.outcome.data.len() as u32,
+                        data: result.outcome.data.into(),
+                        original_size: result.original_size,
+                        skipped: result.outcome.skipped,
+                        error: result.outcome.error,
+                    })
+                    .collect()
+            }))
         }
     }
+
+    /// Start the profiler on first use and print its report when the Node
+    /// environment tears down.
+    ///
+    /// A `cdylib` has no `main` for `#[hotpath::main]` to wrap, so the guard
+    /// is handed to the Node environment instead: dropping it from a cleanup
+    /// hook renders the report as the process exits.
+    #[cfg(feature = "hotpath")]
+    fn ensure_profiling(env: &Env) {
+        static PROFILER: std::sync::Once = std::sync::Once::new();
+        PROFILER.call_once(|| {
+            let guard = hotpath::HotpathGuardBuilder::new("compress_buffers").build();
+            let _ = env.add_env_cleanup_hook(guard, drop);
+        });
+    }
+
+    /// No-op: profiling is compiled out unless the `hotpath` feature is on.
+    #[cfg(not(feature = "hotpath"))]
+    fn ensure_profiling(_env: &Env) {}
 
     /// Guards the one and only `build_global` attempt of this process.
     static GLOBAL_POOL: std::sync::Once = std::sync::Once::new();
@@ -183,12 +218,16 @@ mod binding {
     /// levels are validated synchronously so misconfiguration fails fast;
     /// I/O-shaped failures during compression are reported per task via
     /// [`CompressResult::error`].
+    // `env` is supplied by napi and does not appear in the JS signature.
     #[napi]
     pub fn compress_buffers(
+        env: Env,
         tasks: Vec<CompressTask>,
         buffers: Vec<Buffer>,
         options: Option<BatchOptions>,
     ) -> Result<AsyncTask<CompressWorker>> {
+        ensure_profiling(&env);
+
         if tasks.len() != buffers.len() {
             return Err(Error::new(
                 Status::InvalidArg,

@@ -47,6 +47,7 @@ pub struct BatchOutcome {
 ///
 /// A failure (or panic) of a single item never aborts the batch; it is
 /// reported through [`BatchOutcome::error`].
+#[hotpath::measure]
 pub fn run_batch(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
     let mut outcomes: Vec<BatchOutcome> = Vec::with_capacity(items.len());
 
@@ -58,6 +59,7 @@ pub fn run_batch(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<Ba
     outcomes
 }
 
+#[hotpath::measure]
 fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
     let input_len = item.input.len();
     let algorithm = item.algorithm;
