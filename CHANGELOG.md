@@ -1,5 +1,20 @@
 # @medicomind/rolldown-compression
 
+## 2.2.0
+
+### Minor Changes
+
+- [`e170791`](https://github.com/Medico-Mind/rolldown-compression/commit/e170791f0fbb3c78666604245054131c286272a8) Thanks [@Mnwa](https://github.com/Mnwa)! - Run brotli's sectioned path on rayon, and scale it to the whole pool.
+
+  - Large brotli inputs are now split across rayon's global thread pool instead of brotli's own `WorkerPool`. Sections share the threads that already run the per-file batch, so there are no dedicated OS threads to spawn, no pool to check out and hand back, and no oversubscription when many large files compress at once. Joining a section works rayon's queue instead of parking the worker, so a batch whose every worker sits inside a large-file compression cannot starve itself.
+  - A large input is now cut into one section per full `sectionSize`, capped at one section per worker thread, where the count was previously capped at four regardless of how wide the pool was. Very large bundles now finish on every core instead of a quarter of them: on 100 MiB of real JS at quality 11 with 18 workers, the file compresses in 6.1s instead of 19.0s (3.1x) for 0.1% more output — a tenth of the ratio that splitting the file at all already costs. Going past one section per worker was measured to be slower, not faster, as the extra sections queue behind each other.
+  - Because that cap follows the pool, a file big enough to reach it (larger than `threads * sectionSize`, i.e. 8 MiB per thread at the default window) is split according to the machine's core count or the `concurrency` setting, so its compressed bytes can differ between machines. Inputs below the cap are split by length alone and compress identically everywhere, as does everything gzip and zstd produce. If you need byte-identical brotli output for very large files across a heterogeneous fleet, either set `concurrency` so every machine builds a pool of the same width, or raise `sectionSize` far enough that the section count stays under the cap.
+  - `sectionSize` defaults to two windows (`2^(windowBits + 1)` bytes) instead of one, and inputs take the multithreaded path from twice `sectionSize` instead of four times. At the default window that is 8 MiB sections with multithreading still starting at 16 MiB, so large files are cut into fewer, larger sections and keep more cross-section matches. Compressed bytes for brotli inputs above the threshold differ from 2.1.7; gzip and zstd output is unchanged.
+
+### Patch Changes
+
+- [`e170791`](https://github.com/Medico-Mind/rolldown-compression/commit/e170791f0fbb3c78666604245054131c286272a8) Thanks [@Mnwa](https://github.com/Mnwa)! - Internal: split the compression core into per-algorithm submodules (`compress/inner_{brotli,gzip,zstd}.rs`), and add opt-in [hotpath](https://hotpath.rs) profiling of the batch, per-file and per-algorithm paths behind the crate's `hotpath` / `hotpath-alloc` cargo features. Both are off in every published build — the macros expand to noops and pull in no third-party dependencies — so released bindings are unaffected at compile time and at runtime.
+
 ## 2.1.8
 
 ### Patch Changes
