@@ -23,7 +23,7 @@ export function makeFixtures(scale = 1) {
     { count: 45, min: 60 * 1024, max: 300 * 1024 }, // feature bundles
     { count: 15, min: 1.5 * 1024 * 1024, max: 4.5 * 1024 * 1024 }, // vendor bundles
     // Monolithic bundles past the 16 MiB threshold where brotli splits the
-    // input across its worker pool (4 MiB sections).
+    // input across its worker pool (8 MiB sections at the default windowBits).
     { count: 2, min: 17 * 1024 * 1024, max: 22 * 1024 * 1024 },
   ]
 

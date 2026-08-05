@@ -115,6 +115,10 @@ defineAlgorithm('zstd', { level: 12 })
 
 `sectionSize` is the target number of bytes each brotli worker thread compresses when a large input is split across the native worker pool; inputs at least twice `sectionSize` take the multithreaded path. It defaults to two windows (`2^(windowBits + 1)` bytes) — 8 MiB and multithreading from 16 MiB at the default window — because sections much smaller than the window lose too many cross-section matches. Smaller sections finish large files faster at a slight cost in compression ratio.
 
+**`windowBits` is the main speed/ratio dial.** It sets the brotli sliding window (`2^windowBits` bytes) — how far back a match can be found — and, through the `sectionSize` default above, how large a file has to be before it is split across threads. **Lowering it makes compression faster in two ways at once and costs compression ratio**: a smaller window is cheaper to search, *and* it drops the split threshold to `2^(windowBits + 2)` bytes, so big bundles are cut into sections sooner and finish on more cores (`windowBits: 20` splits from 4 MiB instead of 16 MiB). On the [benchmark](#synthetic-benchmark) fixtures, `windowBits: 20` takes brotli quality 11 from 10.08s to 6.48s. Raising it does the reverse: better ratio, less parallelism, slower builds.
+
+The size penalty depends entirely on how far apart your content's repetitions are: it is real on production bundles (repeated vendor copies, inlined assets, source maps), but on those synthetic fixtures — whose matches are nearly all short-range — it stays within 0.1%, and there `windowBits: 20` even came out marginally *smaller*. **Measure your own output before shipping a lower window** — decoders also allocate the window the stream declares, and above 24 bits brotli needs the large-window extension that browsers do not implement, hence the 10–24 range. The default `22` matches `BROTLI_DEFAULT_WINDOW`, i.e. what `node:zlib` and the `brotli` CLI emit.
+
 ## How it works
 
 - The plugin hooks **`generateBundle`**, while all chunks and assets are still in memory — no filesystem round-trip. Eligible files (filter + threshold) are sent to the native module as **one batched FFI call per build**; results are emitted with `emitFile`.
@@ -190,28 +194,30 @@ Results on an Apple M5 Pro (18 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 #### With PGO
 | scenario                          | output   | native (rust) | node:zlib | speedup |
 |-----------------------------------|----------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 7.06s         | 23.57s    | 3.34x   |
-| gzip (level 9)                    | 9.62 MB  | 0.18s         | 0.53s     | 2.93x   |
-| gzip (level 6)                    | 9.86 MB  | 0.11s         | 0.24s     | 2.08x   |
-| brotli (quality 11)               | 5.45 MB  | 6.91s         | 23.43s    | 3.39x   |
-| brotli (quality 6)                | 9.88 MB  | 0.12s         | 0.23s     | 1.99x   |
-| zstd (level 19)                   | 5.54 MB  | 5.03s         | 8.41s     | 1.67x   |
+| gzip+brotli (ref. defaults: 9/11) | 15.07 MB | 9.72s         | 23.66s    | 2.43x   |
+| gzip (level 9)                    | 9.62 MB  | 0.18s         | 0.53s     | 2.91x   |
+| gzip (level 6)                    | 9.86 MB  | 0.11s         | 0.24s     | 2.07x   |
+| brotli (quality 11)               | 5.45 MB  | 10.17s        | 23.50s    | 2.31x   |
+| brotli (quality 6)                | 9.88 MB  | 0.15s         | 0.22s     | 1.42x   |
+| zstd (level 19)                   | 5.54 MB  | 4.90s         | 8.03s     | 1.64x   |
 
 #### Without PGO
 | scenario                          | output   | native (rust) | node:zlib | speedup |
 |-----------------------------------|----------|---------------|-----------|---------|
-| gzip+brotli (ref. defaults: 9/11) | 15.06 MB | 6.55s         | 23.58s    | 3.60x   |
-| gzip (level 9)                    | 9.62 MB  | 0.16s         | 0.54s     | 3.31x   |
-| gzip (level 6)                    | 9.86 MB  | 0.11s         | 0.24s     | 2.06x   |
-| brotli (quality 11)               | 5.45 MB  | 6.62s         | 23.61s    | 3.56x   |
-| brotli (quality 6)                | 9.88 MB  | 0.11s         | 0.23s     | 2.04x   |
-| zstd (level 19)                   | 5.54 MB  | 5.06s         | 8.43s     | 1.67x   |
+| gzip+brotli (ref. defaults: 9/11) | 15.07 MB | 10.29s        | 23.51s    | 2.29x   |
+| gzip (level 9)                    | 9.62 MB  | 0.16s         | 0.53s     | 3.23x   |
+| gzip (level 6)                    | 9.86 MB  | 0.12s         | 0.24s     | 1.99x   |
+| brotli (quality 11)               | 5.45 MB  | 9.82s         | 23.66s    | 2.41x   |
+| brotli (quality 6)                | 9.88 MB  | 0.15s         | 0.22s     | 1.41x   |
+| zstd (level 19)                   | 5.54 MB  | 4.93s         | 8.02s     | 1.63x   |
 
 Reading these numbers honestly:
 
 - **gzip** and **zstd** are faster per core ([zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), ~2.4x faster per core than node's bundled zlib in our measurements; libzstd) *and* use every core, while `node:zlib` is capped at `UV_THREADPOOL_SIZE` (default 4) threads. The two >16 MiB bundles temper the headline numbers: neither algorithm has a sectioned mode, so each giant file occupies a single thread on both sides and that tail runs at the per-core ratio rather than the thread-count ratio.
-- **brotli at quality 11** is the bound on the combined number: the Rust `brotli` crate is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the speedup is parallelism — every core against `UV_THREADPOOL_SIZE` threads across the many small files, plus the sectioned worker pool (4 x 4 MiB sections) on the >16 MiB bundles that `node:zlib` has to compress one thread per file.
-- The speedup grows with core count and shrinks if you raise `UV_THREADPOOL_SIZE` for the JS side — the benchmark prints both so runs are comparable. The 10-core M1 Pro these tables previously covered landed around 2.4x on the combined scenario; the 18-core M5 Pro reaches 3.3–3.6x against the same 4-thread JS side.
+- **brotli at quality 11** is the bound on the combined number: the Rust `brotli` crate is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the speedup is parallelism — every core against `UV_THREADPOOL_SIZE` threads across the many small files, plus the sectioned worker pool (2 x 8 MiB sections) on the >16 MiB bundles that `node:zlib` has to compress one thread per file.
+- **The brotli rows are slower than the previous release's tables, by design.** `sectionSize` used to default to one window (4 MiB at `windowBits: 22`), splitting a >16 MiB input into up to 4 sections; it now defaults to two windows (8 MiB), so the fixture set's two ~20 MiB bundles are cut into 2 sections instead of 4 and their tail runs on half as many cores. Brotli quality 11 went from ~6.9s to ~10.2s and the combined scenario from 3.34x to 2.43x. Holding the *current* binding fixed and passing only `sectionSize: 4 * 1024 * 1024` brings quality 11 back to 7.29s (vs 10.08s at the default), so the regression is the new default rather than the rayon worker-pool rewrite that landed alongside it. Pass `sectionSize` explicitly if you want the old wall clock.
+- **The ratio this buys is not visible on these fixtures.** The larger default exists because sections much smaller than the window lose cross-section matches, but at quality 11 the same 85 MB comes out **5.450 MB with 8 MiB sections and 5.445 MB with 4 MiB ones** — 0.09%, and in the wrong direction, i.e. block-splitting noise rather than a real gain. The generated fixtures repeat a small vocabulary line by line, so nearly every match is short-range and even a 4 MiB window already finds it. Expect the trade to favor the larger default on real bundles with long-range redundancy (repeated vendor copies, inlined assets, source maps) — and measure your own output before trading wall clock for it.
+- The speedup grows with core count and shrinks if you raise `UV_THREADPOOL_SIZE` for the JS side — the benchmark prints both so runs are comparable. The 10-core M1 Pro these tables previously covered landed around 2.4x on the combined scenario, and the 18-core M5 Pro reaches 2.3–2.4x at the current section default (it reached 3.3–3.6x at the old 4 MiB one) against the same 4-thread JS side.
 - The two tables above are single runs of each binding, so the small differences *between* them are run-to-run noise, not a PGO effect — see [PGO / BOLT builds](#pgo--bolt-builds) for an interleaved median comparison of the same two binaries.
 
 ### PGO / BOLT builds
@@ -232,7 +238,7 @@ Reading these numbers honestly:
 | baseline       | plain `--release` (fat LTO, `codegen-units = 1`)           |
 | pgo / pgo+bolt | same flags plus `-Cprofile-use` (and BOLT layout on Linux) |
 
-Expect modest gains at best: the baseline already ships fat LTO with `codegen-units = 1`, so there is little left for PGO to find. On an M5 Pro the interleaved medians come out at parity (0.98x–1.02x across the compression-heavy scenarios); an earlier M1 Pro run measured ~1.1x on brotli quality 11. Treat single-digit-percent deltas in either direction — and every sub-second scenario — as measurement noise rather than a real speedup or regression.
+Expect modest gains at best: the baseline already ships fat LTO with `codegen-units = 1`, so there is little left for PGO to find. On an M5 Pro the interleaved medians come out at parity (0.96x–1.03x across the compression-heavy scenarios); an earlier M1 Pro run measured ~1.1x on brotli quality 11. Treat single-digit-percent deltas in either direction — and every sub-second scenario — as measurement noise rather than a real speedup or regression.
 
 The release workflow builds every published binary with PGO. Cross-compiled targets run the training workload through an emulation layer — x64 Node under Rosetta 2 for `x86_64-apple-darwin`, an arm64 Node container under QEMU for `aarch64-unknown-linux-gnu`, and an Alpine container for musl — so each target trains on its own instrumented binding.
 
