@@ -5,7 +5,7 @@ use super::InputBuffer;
 use brotli::Allocator;
 use brotli::enc::threading::{
     BrotliEncoderThreadError, CompressMulti, InternalOwned, InternalSendAlloc, Joinable, Owned,
-    SendAlloc,
+    OwnedRetriever, PoisonedThreadError, SendAlloc,
 };
 use brotli::enc::{
     BatchSpawnableLite, BrotliAlloc, BrotliEncoderMaxCompressedSize, BrotliEncoderParams,
@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
@@ -71,6 +71,27 @@ impl SliceWrapper<u8> for SharedInput {
 /// when many large files are compressed at once.
 #[derive(Copy, Clone)]
 struct RayonBrotliWorkerPool;
+
+/// The input shared with every in-flight section.
+///
+/// Sections only ever read it — brotli's own spawners reach for
+/// `Arc<RwLock<U>>` because that is the one [`OwnedRetriever`] impl the crate
+/// ships, not because anything writes — so a bare [`Arc`] carries it with no
+/// lock to take and no poisoning to handle. `U: Sync` at the spawn site is what
+/// makes sharing `&U` across sections sound.
+struct SharedSections<U>(Arc<U>);
+
+impl<U: Send + 'static> OwnedRetriever<U> for SharedSections<U> {
+    fn view<T, F: FnOnce(&U) -> T>(&self, f: F) -> Result<T, PoisonedThreadError> {
+        Ok(f(&self.0))
+    }
+
+    /// `CompressMulti` calls this to take the input back once every section is
+    /// joined; it only succeeds if no section still holds a clone.
+    fn unwrap(self) -> Result<U, PoisonedThreadError> {
+        Arc::try_unwrap(self.0).map_err(|_| PoisonedThreadError::default())
+    }
+}
 
 /// Handle to one section handed to rayon; its result arrives over a one-shot
 /// channel.
@@ -133,17 +154,17 @@ where
     <Alloc as Allocator<u8>>::AllocatedMemory: Send + 'static,
 {
     type JoinHandle = RayonJoinable<ReturnValue>;
-    type FinalJoinHandle = Arc<RwLock<U>>;
+    type FinalJoinHandle = SharedSections<U>;
 
     fn make_spawner(&mut self, input: &mut Owned<U>) -> Self::FinalJoinHandle {
-        Arc::new(RwLock::new(
+        SharedSections(Arc::new(
             mem::replace(input, Owned(InternalOwned::Borrowed)).unwrap(),
         ))
     }
 
     fn spawn(
         &mut self,
-        locked_input: &mut Self::FinalJoinHandle,
+        shared_input: &mut Self::FinalJoinHandle,
         work: &mut SendAlloc<ReturnValue, ExtraInput, Alloc, Self::JoinHandle>,
         index: usize,
         num_threads: usize,
@@ -151,17 +172,19 @@ where
     ) {
         let (alloc, extra_input) = work.replace_with_default();
         let (sender, result) = sync_channel(1);
-        let input = locked_input.clone();
+        let input = shared_input.0.clone();
         rayon::spawn_fifo(move || {
-            let Ok(input) = input.read() else {
-                return; // poisoned; the dropped sender reports it on join
-            };
             // A panic escaping here would reach rayon's default panic handler
             // and abort the process. Dropping the sender instead turns it into
             // an ordinary `Err` from `compress`.
             let section = catch_unwind(AssertUnwindSafe(|| {
                 f(extra_input, index, num_threads, &input, alloc)
             }));
+            // Release our share of the input *before* publishing the result:
+            // the joining thread reclaims it with `Arc::try_unwrap` as soon as
+            // the last section is joined, and that fails while this clone is
+            // still alive. Brotli's own worker pool orders these the same way.
+            drop(input);
             if let Ok(section) = section {
                 // A gone receiver means `CompressMulti` bailed out before
                 // joining this section, which is normal on its error paths.
