@@ -1,23 +1,22 @@
 //! Compression algorithm implementations.
 //!
+//! This module holds only the algorithm-agnostic surface: the [`Algorithm`]
+//! enum, level validation, and the [`compress`] entry point that dispatches
+//! into the per-algorithm `inner_*` submodules.
+//!
 //! Unit tested with plain `cargo test`: the only napi type used is the
 //! [`InputBuffer`] alias, which switches to `Vec<u8>` under test so the test
 //! harness never references Node-API symbols (they only exist inside a
 //! Node.js process).
 
-use brotli::enc::threading::{Owned, SendAlloc};
-use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
-use brotli::enc::{
-    BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
-    UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
-};
-use crossbeam_deque::{Injector, Steal};
-use std::cell::RefCell;
+mod inner_brotli;
+mod inner_gzip;
+mod inner_zstd;
+
 use std::fmt::Display;
-use std::io::Read;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::str::FromStr;
-use std::sync::LazyLock;
+
+pub use inner_brotli::{BROTLI_DEFAULT_WINDOW_BITS, validate_section_size, validate_window_bits};
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
 /// production, a plain `Vec<u8>` under `cargo test`. Both hand out `&[u8]`
@@ -36,13 +35,6 @@ pub enum Algorithm {
     Brotli,
     Zstd,
 }
-
-/// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
-pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
-
-const BROTLI_MIN_THREADS: usize = 2;
-const BROTLI_MAX_THREADS: usize = 4;
-const BROTLI_BUFFER_SIZE: usize = 4096;
 
 impl Algorithm {
     pub fn default_level(self) -> u32 {
@@ -102,26 +94,6 @@ impl Display for Algorithm {
     }
 }
 
-/// Validate a brotli window size (log2 of window size, `lgwin`).
-pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {
-    if !(10..=24).contains(&window_bits) {
-        return Err(format!(
-            "invalid brotli windowBits {window_bits}: expected 10..=24"
-        ));
-    }
-    Ok(())
-}
-
-/// Validate a brotli section size in bytes.
-pub fn validate_section_size(section_size: u32) -> Result<(), String> {
-    if section_size == 0 {
-        return Err(format!(
-            "invalid brotli sectionSize {section_size}: expected a positive number of bytes"
-        ));
-    }
-    Ok(())
-}
-
 /// Compress `input` with the given algorithm and level.
 ///
 /// `window_bits` and `section_size` are only used by brotli and ignored by
@@ -140,235 +112,15 @@ pub fn compress(
 ) -> Result<Vec<u8>, String> {
     algorithm.validate_level(level)?;
     let mut output = match algorithm {
-        Algorithm::Gzip => compress_gzip(level, input.as_ref()),
-        Algorithm::Brotli => {
-            let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
-            validate_window_bits(window_bits)?;
-            // Default to one full window per section: sections much smaller
-            // than the window lose too many cross-section matches.
-            let section_size = section_size.unwrap_or(1 << window_bits);
-            validate_section_size(section_size)?;
-            compress_brotli(level, window_bits, section_size as usize, input)
-        }
-        Algorithm::Zstd => compress_zstd(level, input.as_ref()),
+        Algorithm::Gzip => inner_gzip::compress(level, input.as_ref()),
+        Algorithm::Brotli => inner_brotli::compress(level, window_bits, section_size, input),
+        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref()),
     }?;
     // Output buffers are sized for the worst case, so compressible input
     // leaves most of the capacity unused; results are held until the JS side
     // drains the batch, so hand back right-sized buffers.
     output.shrink_to_fit();
     Ok(output)
-}
-
-/// Calculates the maximum upper bound of bytes required to safely hold
-/// compressed data in the standard gzip format for a given input length.
-///
-/// This formula accounts for the worst-case DEFLATE overhead (~0.03%)
-/// plus the standard 18-byte gzip header and trailer (12 bytes larger than zlib).
-/// It assumes a minimal header with no optional metadata (like filenames).
-fn gzip_compress_bound_formula(source_len: usize) -> usize {
-    source_len + (source_len >> 12) + (source_len >> 14) + (source_len >> 25) + 25
-}
-
-#[hotpath::measure]
-fn compress_gzip(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
-    let mut output = Vec::with_capacity(gzip_compress_bound_formula(input.len()));
-    // Read-side encoder: every `read` deflates, so the wrapper reports real
-    // compression work and compressed bytes out rather than buffered writes.
-    let mut encoder = hotpath::io!(
-        flate2::GzBuilder::new().buf_read(input, flate2::Compression::new(level)),
-        label = "gzip-deflate"
-    );
-    encoder
-        .read_to_end(&mut output)
-        .map_err(|err| format!("gzip compression failed: {err}"))?;
-    Ok(output)
-}
-
-/// Owned input for `compress_worker_pool`, which shares the buffer across
-/// worker threads and therefore cannot borrow it. Newtype because the orphan
-/// rule forbids implementing brotli's `SliceWrapper` for [`InputBuffer`]
-/// directly.
-struct SharedInput(InputBuffer);
-
-impl SliceWrapper<u8> for SharedInput {
-    fn slice(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-type BrotliWorkerPool = WorkerPool<
-    CompressionThreadResult<StandardAlloc>,
-    UnionHasher<StandardAlloc>,
-    StandardAlloc,
-    (SharedInput, BrotliEncoderParams),
->;
-
-/// Cache of idle brotli worker pools, shared by every rayon worker that hits
-/// the sectioned path. Spinning a pool up costs OS thread spawns, so pools are
-/// checked out for the duration of one compression and returned afterwards
-/// rather than rebuilt per input.
-///
-/// Backed by a lock-free [`Injector`]: checkout/return happen on every large
-/// input from all rayon workers at once, and the queue is unordered by nature
-/// (any idle pool will do), so there is nothing for a mutex to protect.
-#[derive(Default)]
-struct BrotliWorkerPoolPool {
-    queue: Injector<BrotliWorkerPool>,
-}
-
-impl BrotliWorkerPoolPool {
-    fn with_mut<T>(
-        &self,
-        callback: impl FnOnce(&mut BrotliWorkerPool) -> T,
-    ) -> std::thread::Result<T> {
-        let mut pool = self.pop();
-        let res = catch_unwind(AssertUnwindSafe(|| callback(&mut pool)));
-        self.queue.push(pool);
-        res
-    }
-    #[hotpath::measure(label = "brotli_worker_pool_checkout")]
-    fn pop(&self) -> BrotliWorkerPool {
-        loop {
-            match self.queue.steal() {
-                Steal::Success(worker_pool) => return worker_pool,
-                // A concurrent push/steal raced us; the queue may still hold a
-                // pool, so retry rather than pay for a fresh one.
-                Steal::Retry => std::thread::yield_now(),
-                Steal::Empty => break,
-            }
-        }
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        new_work_pool(threads.saturating_sub(1))
-    }
-}
-
-static BROTLI_WORKER_POOL_POOL: LazyLock<BrotliWorkerPoolPool> =
-    LazyLock::new(BrotliWorkerPoolPool::default);
-
-/// Compress large inputs by splitting them into ~`section_size` sections
-/// spread over the per-thread worker pool; smaller inputs stay in one
-/// section on the calling thread.
-///
-/// Inputs at least four times `section_size` are split (16 MiB at the
-/// default section size); below that a cross-file rayon batch already keeps
-/// all cores busy and splitting would only cost ratio. The section count depends on the pool's thread budget, so output
-/// bytes for inputs past that threshold are stable within a process but may
-/// differ across machines or `concurrency` settings. Sectioning costs a
-/// fraction of a percent of ratio versus a single stream, in exchange for
-/// finishing the large files that dominate a batch tail several times faster.
-///
-/// On Windows every input is compressed single-threaded regardless of size:
-/// the sectioned path needs a persistent `thread_local` worker pool, and
-/// dropping one there deadlocks — TLS destructors run under the Windows
-/// loader lock, and `WorkerPool::drop` joins worker threads that cannot exit
-/// without that same lock (rust-lang/rust#74875).
-#[hotpath::measure]
-fn compress_brotli(
-    quality: u32,
-    window_bits: u32,
-    section_size: usize,
-    input: InputBuffer,
-) -> Result<Vec<u8>, String> {
-    let input_len = input.len();
-    let params = BrotliEncoderParams {
-        quality: quality as i32,
-        lgwin: window_bits as i32,
-        size_hint: input_len,
-        ..Default::default()
-    };
-    if input_len >= 4 * section_size {
-        let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        // Check a pool out for the duration of this compression and hand it
-        // back afterwards; its threads outlive the call and get reused by
-        // whichever rayon worker claims the pool next.
-        BROTLI_WORKER_POOL_POOL
-            .with_mut(|pool| {
-                compress_brotli_pooled(&params, num_sections, pool, SharedInput(input))
-            })
-            .map_err(|_| "brotli compression failed: panic handled".to_string())?
-    } else {
-        compress_brotli_single(&params, input.as_ref())
-    }
-}
-
-thread_local! {
-    /// Scratch space for `BrotliCompressCustomAlloc`, split into an input and an
-    /// output half. Heap-backed on purpose: this crate is a `cdylib` loaded with
-    /// `dlopen`, and an inline `[u8; 8192]` blows past glibc's static TLS surplus
-    /// ("cannot allocate memory in static TLS block") once mimalloc has taken its
-    /// share, so the binding fails to load at all on linux-gnu.
-    static BROTLI_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0; BROTLI_BUFFER_SIZE * 2]);
-}
-
-#[hotpath::measure]
-fn compress_brotli_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
-    let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
-    let mut reader = input;
-    BROTLI_BUFFER
-        .with_borrow_mut(|buffer| {
-            let (input_buf, output_buf) = buffer.split_at_mut(BROTLI_BUFFER_SIZE);
-            brotli::BrotliCompressCustomAlloc(
-                &mut reader,
-                &mut output,
-                input_buf,
-                output_buf,
-                params,
-                StandardAlloc::default(),
-            )
-        })
-        .map_err(|err| format!("brotli compression failed: {err}"))?;
-    Ok(output)
-}
-
-#[hotpath::measure]
-fn compress_brotli_pooled(
-    params: &BrotliEncoderParams,
-    num_sections: usize,
-    pool: &mut BrotliWorkerPool,
-    input: SharedInput,
-) -> Result<Vec<u8>, String> {
-    let input_len = input.slice().len();
-    let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input_len, num_sections)];
-    let mut alloc_per_thread: Vec<_> = (0..num_sections)
-        .map(|_| SendAlloc::new(StandardAlloc::default(), UnionHasher::Uninit))
-        .collect();
-    let written = compress_worker_pool(
-        params,
-        &mut Owned::new(input),
-        &mut output,
-        &mut alloc_per_thread,
-        pool,
-    )
-    .map_err(|err| format!("brotli compression failed: {err:?}"))?;
-    output.truncate(written);
-    Ok(output)
-}
-
-// A zstd context at the levels used here owns tens of megabytes of match
-// tables; keeping one per worker thread avoids reallocating them for
-// every file. `i32::MIN` marks a fresh context whose level is not yet
-// configured (validated levels are all above it).
-thread_local! {
-    static ZSTD_CONTEXT: RefCell<(i32, zstd::bulk::Compressor<'static>)> =
-        RefCell::new((i32::MIN, zstd::bulk::Compressor::default()));
-}
-
-#[hotpath::measure]
-fn compress_zstd(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
-    ZSTD_CONTEXT.with_borrow_mut(|(current_level, compressor)| {
-        let level = level as i32;
-        if *current_level != level {
-            compressor
-                .set_compression_level(level)
-                .map_err(|err| format!("zstd compression failed: {err}"))?;
-            *current_level = level;
-        }
-        compressor
-            .compress(input)
-            .map_err(|err| format!("zstd compression failed: {err}"))
-    })
 }
 
 #[cfg(test)]
@@ -378,13 +130,8 @@ mod tests {
 
     const ALGORITHMS: [Algorithm; 3] = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
 
-    /// Default section size (one window, `2^window_bits` bytes) and the
-    /// multi-section threshold derived from it, mirroring the on-the-fly
-    /// computation in `compress`.
-    const DEFAULT_SECTION_SIZE: usize = 1 << BROTLI_DEFAULT_WINDOW_BITS;
-    const DEFAULT_MULTI_THRESHOLD: usize = 4 * DEFAULT_SECTION_SIZE;
-
-    fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {
+    /// Shared with the `inner_*` submodules' own test modules.
+    pub(super) fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {
         match algorithm {
             Algorithm::Gzip => {
                 let mut decoder = flate2::read::GzDecoder::new(input);
@@ -402,7 +149,7 @@ mod tests {
         }
     }
 
-    fn pseudo_random(len: usize) -> Vec<u8> {
+    pub(super) fn pseudo_random(len: usize) -> Vec<u8> {
         // xorshift-based deterministic noise: effectively incompressible.
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
         (0..len)
@@ -493,80 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_large_brotli_inputs_via_multithreaded_path() {
-        // Sized to cross DEFAULT_MULTI_THRESHOLD and exercise the worker pool.
-        // Moderate qualities keep the debug-build test runtime reasonable;
-        // the sectioning machinery is identical at every quality.
-        let compressible = b"export const value = 42; // padding padding\n".repeat(382_000);
-        assert!(compressible.len() >= DEFAULT_MULTI_THRESHOLD);
-        for level in [5, 9] {
-            let compressed = compress(Algorithm::Brotli, level, None, None, compressible.clone())
-                .expect("compress");
-            assert!(compressed.len() < compressible.len());
-            assert_eq!(decompress(Algorithm::Brotli, &compressed), compressible);
-        }
-
-        let incompressible = pseudo_random(DEFAULT_MULTI_THRESHOLD + 12_345);
-        let compressed =
-            compress(Algorithm::Brotli, 9, None, None, incompressible.clone()).expect("compress");
-        assert_eq!(decompress(Algorithm::Brotli, &compressed), incompressible);
-    }
-
-    #[test]
-    fn worker_pool_round_trips_multi_section_inputs() {
-        // The global pool's section budget depends on which test initializes
-        // it first, so pin a dedicated pool to guarantee multi-section
-        // coverage: 4 sections need 3 pool workers plus the calling thread.
-        let input = b"export const value = 42; // padding padding\n".repeat(382_000);
-        let num_sections = input.len() / DEFAULT_SECTION_SIZE;
-        assert!(num_sections >= 4);
-        let params = BrotliEncoderParams {
-            quality: 5,
-            lgwin: BROTLI_DEFAULT_WINDOW_BITS as i32,
-            size_hint: input.len(),
-            ..Default::default()
-        };
-        let mut pool = new_work_pool(num_sections - 1);
-        let compressed =
-            compress_brotli_pooled(&params, num_sections, &mut pool, SharedInput(input.clone()))
-                .expect("compress");
-        assert!(compressed.len() < input.len());
-        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
-    }
-
-    #[test]
-    fn multithreaded_path_engages_for_large_inputs() {
-        // Sectioned output has different block boundaries than a single
-        // stream, so equality with the single-threaded encoder means the
-        // worker-pool path silently fell back (as a lazy-init bug once did).
-        let input = b"export const value = 42; // padding padding\n".repeat(382_000);
-        assert!(input.len() >= DEFAULT_MULTI_THRESHOLD);
-        let params = BrotliEncoderParams {
-            quality: 5,
-            lgwin: BROTLI_DEFAULT_WINDOW_BITS as i32,
-            size_hint: input.len(),
-            ..Default::default()
-        };
-        let single = compress_brotli_single(&params, input.as_ref()).expect("compress");
-        let compressed =
-            compress(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
-        assert_ne!(
-            compressed, single,
-            "large input should take the sectioned worker-pool path, not the single-stream encoder"
-        );
-        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
-    }
-
-    #[test]
-    fn multithreaded_brotli_is_deterministic() {
-        let input = b"function chunk(a, b) { return a + b; }\n".repeat(431_000);
-        assert!(input.len() >= DEFAULT_MULTI_THRESHOLD);
-        let first = compress(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
-        let second = compress(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
-        assert_eq!(first, second);
-    }
-
-    #[test]
     fn honors_level_bounds() {
         let input = b"hello world".repeat(1000);
         for algorithm in ALGORITHMS {
@@ -602,68 +275,6 @@ mod tests {
         assert!(compress(Algorithm::Brotli, 12, None, None, b"x".to_vec()).is_err());
         assert!(compress(Algorithm::Zstd, 0, None, None, b"x".to_vec()).is_err());
         assert!(compress(Algorithm::Zstd, 23, None, None, b"x".to_vec()).is_err());
-    }
-
-    #[test]
-    fn rejects_invalid_window_bits() {
-        assert!(compress(Algorithm::Brotli, 11, Some(9), None, b"x".to_vec()).is_err());
-        assert!(compress(Algorithm::Brotli, 11, Some(25), None, b"x".to_vec()).is_err());
-        assert!(compress(Algorithm::Brotli, 11, Some(10), None, b"x".to_vec()).is_ok());
-        assert!(compress(Algorithm::Brotli, 11, Some(24), None, b"x".to_vec()).is_ok());
-    }
-
-    #[test]
-    fn rejects_invalid_section_size() {
-        assert!(compress(Algorithm::Brotli, 11, None, Some(0), b"x".to_vec()).is_err());
-        assert!(compress(Algorithm::Brotli, 11, None, Some(1), b"x".to_vec()).is_ok());
-    }
-
-    #[test]
-    fn honors_custom_section_size() {
-        // 256 KiB sections push a ~1 MB input through the multithreaded path
-        // that the default section size would compress single-threaded.
-        let input = b"export const value = 42; // padding padding\n".repeat(24_000);
-        let section_size = 256 * 1024_u32;
-        assert!(input.len() >= 4 * section_size as usize);
-        assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
-        let compressed = compress(
-            Algorithm::Brotli,
-            5,
-            None,
-            Some(section_size),
-            input.clone(),
-        )
-        .expect("compress");
-        assert!(compressed.len() < input.len());
-        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
-    }
-
-    #[test]
-    fn derives_default_section_size_from_window_bits() {
-        // With no explicit section size the default is one window
-        // (2^windowBits bytes), so windowBits 18 gives 256 KiB sections and
-        // this ~1 MB input crosses the 4x multithreading threshold that the
-        // default window would compress single-threaded. Sectioned output
-        // differs from the single-stream encoder's, which proves the
-        // derived default engaged the worker-pool path.
-        let input = b"export const value = 42; // padding padding\n".repeat(24_000);
-        let window_bits = 18_u32;
-        assert!(input.len() >= 4 << window_bits);
-        assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
-        let params = BrotliEncoderParams {
-            quality: 5,
-            lgwin: window_bits as i32,
-            size_hint: input.len(),
-            ..Default::default()
-        };
-        let single = compress_brotli_single(&params, input.as_ref()).expect("compress");
-        let compressed = compress(Algorithm::Brotli, 5, Some(window_bits), None, input.clone())
-            .expect("compress");
-        assert_ne!(
-            compressed, single,
-            "default section size should follow windowBits onto the sectioned path"
-        );
-        assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
 
     #[test]
