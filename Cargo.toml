@@ -10,7 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 brotli = "8"
-crossbeam-deque = "0.8"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 hotpath = "0.23"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }

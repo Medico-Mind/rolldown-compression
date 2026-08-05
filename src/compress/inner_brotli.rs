@@ -1,25 +1,35 @@
-//! Brotli-specific compression: parameter validation, the shared worker-pool
-//! pool backing the sectioned path, and the single-stream fallback.
-
-use brotli::enc::threading::{Owned, SendAlloc};
-use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
-use brotli::enc::{
-    BrotliEncoderMaxCompressedSizeMulti, CompressionThreadResult, SliceWrapper, StandardAlloc,
-    UnionHasher, WorkerPool, compress_worker_pool, new_work_pool,
-};
-use crossbeam_deque::{Injector, Steal};
-use std::cell::RefCell;
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::LazyLock;
+//! Brotli-specific compression: parameter validation, the rayon-backed
+//! sectioned path, and the single-stream fallback.
 
 use super::InputBuffer;
+use brotli::Allocator;
+use brotli::enc::threading::{
+    BrotliEncoderThreadError, CompressMulti, InternalOwned, InternalSendAlloc, Joinable, Owned,
+    SendAlloc,
+};
+use brotli::enc::{
+    BatchSpawnableLite, BrotliAlloc, BrotliEncoderMaxCompressedSize, BrotliEncoderParams,
+};
+use brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher};
+use rayon::Yield;
+use std::cell::RefCell;
+use std::mem;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
-const BROTLI_MIN_THREADS: usize = 2;
-const BROTLI_MAX_THREADS: usize = 4;
+const BROTLI_MIN_SECTIONS: usize = 2;
+const BROTLI_MAX_SECTIONS: usize = 4;
 const BROTLI_BUFFER_SIZE: usize = 4096;
+
+/// How long [`RayonJoinable::join`] parks once rayon reports nothing left to
+/// steal. Short enough that a section becoming stealable again is picked up
+/// promptly, long enough not to spin.
+const BROTLI_JOIN_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 /// Validate a brotli window size (log2 of window size, `lgwin`).
 pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {
@@ -41,10 +51,9 @@ pub fn validate_section_size(section_size: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Owned input for `compress_worker_pool`, which shares the buffer across
-/// worker threads and therefore cannot borrow it. Newtype because the orphan
-/// rule forbids implementing brotli's `SliceWrapper` for [`InputBuffer`]
-/// directly.
+/// Owned input for [`CompressMulti`], which shares the buffer across section
+/// tasks and therefore cannot borrow it. Newtype because the orphan rule
+/// forbids implementing brotli's `SliceWrapper` for [`InputBuffer`] directly.
 struct SharedInput(InputBuffer);
 
 impl SliceWrapper<u8> for SharedInput {
@@ -53,56 +62,115 @@ impl SliceWrapper<u8> for SharedInput {
     }
 }
 
-type BrotliWorkerPool = WorkerPool<
-    CompressionThreadResult<StandardAlloc>,
-    UnionHasher<StandardAlloc>,
-    StandardAlloc,
-    (SharedInput, BrotliEncoderParams),
->;
-
-/// Cache of idle brotli worker pools, shared by every rayon worker that hits
-/// the sectioned path. Spinning a pool up costs OS thread spawns, so pools are
-/// checked out for the duration of one compression and returned afterwards
-/// rather than rebuilt per input.
+/// Section spawner for [`CompressMulti`] backed by the global rayon pool.
 ///
-/// Backed by a lock-free [`Injector`]: checkout/return happen on every large
-/// input from all rayon workers at once, and the queue is unordered by nature
-/// (any idle pool will do), so there is nothing for a mutex to protect.
-#[derive(Default)]
-struct BrotliWorkerPoolPool {
-    queue: Injector<BrotliWorkerPool>,
+/// Brotli's own `WorkerPool` owns dedicated OS threads that have to be kept
+/// alive between calls to be worth their spawn cost. Running sections on rayon
+/// instead means they share the very threads that already run the surrounding
+/// per-file batch: no extra threads, no pool lifecycle, and no oversubscription
+/// when many large files are compressed at once.
+#[derive(Copy, Clone)]
+struct RayonBrotliWorkerPool;
+
+/// Handle to one section handed to rayon; its result arrives over a one-shot
+/// channel.
+struct RayonJoinable<ReturnValue> {
+    result: Receiver<ReturnValue>,
 }
 
-impl BrotliWorkerPoolPool {
-    fn with_mut<T>(
-        &self,
-        callback: impl FnOnce(&mut BrotliWorkerPool) -> T,
-    ) -> std::thread::Result<T> {
-        let mut pool = self.pop();
-        let res = catch_unwind(AssertUnwindSafe(|| callback(&mut pool)));
-        self.queue.push(pool);
-        res
-    }
-    #[hotpath::measure(label = "brotli_worker_pool_checkout")]
-    fn pop(&self) -> BrotliWorkerPool {
+impl<ReturnValue: Send + 'static> Joinable<ReturnValue, BrotliEncoderThreadError>
+    for RayonJoinable<ReturnValue>
+{
+    fn join(self) -> Result<ReturnValue, BrotliEncoderThreadError> {
         loop {
-            match self.queue.steal() {
-                Steal::Success(worker_pool) => return worker_pool,
-                // A concurrent push/steal raced us; the queue may still hold a
-                // pool, so retry rather than pay for a fresh one.
-                Steal::Retry => std::thread::yield_now(),
-                Steal::Empty => break,
+            match self.result.try_recv() {
+                Ok(result) => return Ok(result),
+                // The task dropped its sender without sending: the input lock
+                // was poisoned, or the section itself panicked.
+                Err(TryRecvError::Disconnected) => {
+                    return Err(BrotliEncoderThreadError::OtherThreadPanic);
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+            // `CompressMulti` compresses the last section inline and only then
+            // joins the rest, so this runs on a rayon worker. Blocking it
+            // outright would take a thread away from the very sections being
+            // waited on — and with every worker inside a large-file compression
+            // at once, that deadlocks. Work off the queue instead of parking.
+            match rayon::yield_now() {
+                Some(Yield::Executed) => continue,
+                // Nothing stealable: the outstanding sections are already
+                // running elsewhere, so park briefly rather than spin, then
+                // offer to help again in case new work showed up.
+                Some(Yield::Idle) => match self.result.recv_timeout(BROTLI_JOIN_POLL_INTERVAL) {
+                    Ok(result) => return Ok(result),
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        return Err(BrotliEncoderThreadError::OtherThreadPanic);
+                    }
+                },
+                // Not a rayon worker (a single-file call, or a test): there is
+                // no queue to help with, so a plain block is both correct and
+                // cheapest.
+                None => {
+                    return self
+                        .result
+                        .recv()
+                        .map_err(|_| BrotliEncoderThreadError::OtherThreadPanic);
+                }
             }
         }
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        new_work_pool(threads.saturating_sub(1))
     }
 }
 
-static BROTLI_WORKER_POOL_POOL: LazyLock<BrotliWorkerPoolPool> =
-    LazyLock::new(BrotliWorkerPoolPool::default);
+impl<
+    ReturnValue: Send + 'static,
+    ExtraInput: Send + 'static,
+    Alloc: BrotliAlloc + Send + 'static,
+    U: Send + 'static + Sync,
+> BatchSpawnableLite<ReturnValue, ExtraInput, Alloc, U> for RayonBrotliWorkerPool
+where
+    <Alloc as Allocator<u8>>::AllocatedMemory: Send + 'static,
+{
+    type JoinHandle = RayonJoinable<ReturnValue>;
+    type FinalJoinHandle = Arc<RwLock<U>>;
+
+    fn make_spawner(&mut self, input: &mut Owned<U>) -> Self::FinalJoinHandle {
+        Arc::new(RwLock::new(
+            mem::replace(input, Owned(InternalOwned::Borrowed)).unwrap(),
+        ))
+    }
+
+    fn spawn(
+        &mut self,
+        locked_input: &mut Self::FinalJoinHandle,
+        work: &mut SendAlloc<ReturnValue, ExtraInput, Alloc, Self::JoinHandle>,
+        index: usize,
+        num_threads: usize,
+        f: fn(ExtraInput, usize, usize, &U, Alloc) -> ReturnValue,
+    ) {
+        let (alloc, extra_input) = work.replace_with_default();
+        let (sender, result) = sync_channel(1);
+        let input = locked_input.clone();
+        rayon::spawn(move || {
+            let Ok(input) = input.read() else {
+                return; // poisoned; the dropped sender reports it on join
+            };
+            // A panic escaping here would reach rayon's default panic handler
+            // and abort the process. Dropping the sender instead turns it into
+            // an ordinary `Err` from `compress`.
+            let section = catch_unwind(AssertUnwindSafe(|| {
+                f(extra_input, index, num_threads, &input, alloc)
+            }));
+            if let Ok(section) = section {
+                // A gone receiver means `CompressMulti` bailed out before
+                // joining this section, which is normal on its error paths.
+                let _ = sender.send(section);
+            }
+        });
+        *work = SendAlloc(InternalSendAlloc::Join(RayonJoinable { result }));
+    }
+}
 
 /// Compress `input` with brotli, applying the brotli-only defaults for
 /// `window_bits` and `section_size` when the caller left them unset.
@@ -123,22 +191,16 @@ pub fn compress(
 }
 
 /// Compress large inputs by splitting them into ~`section_size` sections
-/// spread over the per-thread worker pool; smaller inputs stay in one
-/// section on the calling thread.
+/// spread over the rayon pool; smaller inputs stay in one section on the
+/// calling thread.
 ///
 /// Inputs at least four times `section_size` are split (16 MiB at the
 /// default section size); below that a cross-file rayon batch already keeps
-/// all cores busy and splitting would only cost ratio. The section count depends on the pool's thread budget, so output
-/// bytes for inputs past that threshold are stable within a process but may
-/// differ across machines or `concurrency` settings. Sectioning costs a
-/// fraction of a percent of ratio versus a single stream, in exchange for
-/// finishing the large files that dominate a batch tail several times faster.
-///
-/// On Windows every input is compressed single-threaded regardless of size:
-/// the sectioned path needs a persistent `thread_local` worker pool, and
-/// dropping one there deadlocks — TLS destructors run under the Windows
-/// loader lock, and `WorkerPool::drop` joins worker threads that cannot exit
-/// without that same lock (rust-lang/rust#74875).
+/// all cores busy and splitting would only cost ratio. The section count is
+/// derived from the input length alone, so output bytes are reproducible
+/// across machines and `concurrency` settings. Sectioning costs a fraction of
+/// a percent of ratio versus a single stream, in exchange for finishing the
+/// large files that dominate a batch tail several times faster.
 #[hotpath::measure(label = "compress_brotli")]
 fn compress_sectioned(
     quality: u32,
@@ -154,13 +216,9 @@ fn compress_sectioned(
         ..Default::default()
     };
     if input_len >= 4 * section_size {
-        let num_sections = (input_len / section_size).clamp(BROTLI_MIN_THREADS, BROTLI_MAX_THREADS);
-        // Check a pool out for the duration of this compression and hand it
-        // back afterwards; its threads outlive the call and get reused by
-        // whichever rayon worker claims the pool next.
-        BROTLI_WORKER_POOL_POOL
-            .with_mut(|pool| compress_pooled(&params, num_sections, pool, SharedInput(input)))
-            .map_err(|_| "brotli compression failed: panic handled".to_string())?
+        let num_sections =
+            (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, BROTLI_MAX_SECTIONS);
+        compress_multi(&params, num_sections, SharedInput(input))
     } else {
         compress_single(&params, input.as_ref())
     }
@@ -195,25 +253,29 @@ fn compress_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>
     Ok(output)
 }
 
-#[hotpath::measure(label = "compress_brotli_pooled")]
-fn compress_pooled(
+#[hotpath::measure(label = "compress_brotli_multi")]
+fn compress_multi(
     params: &BrotliEncoderParams,
     num_sections: usize,
-    pool: &mut BrotliWorkerPool,
     input: SharedInput,
 ) -> Result<Vec<u8>, String> {
     let input_len = input.slice().len();
     let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input_len, num_sections)];
-    let mut alloc_per_thread: Vec<_> = (0..num_sections)
+    let mut alloc_per_section: Vec<_> = (0..num_sections)
         .map(|_| SendAlloc::new(StandardAlloc::default(), UnionHasher::Uninit))
         .collect();
-    let written = compress_worker_pool(
-        params,
-        &mut Owned::new(input),
-        &mut output,
-        &mut alloc_per_thread,
-        pool,
-    )
+    // The last section is compressed inline by `CompressMulti`, so a panic
+    // there unwinds through here rather than through a spawned task.
+    let written = catch_unwind(AssertUnwindSafe(|| {
+        CompressMulti(
+            params,
+            &mut Owned::new(input),
+            &mut output,
+            &mut alloc_per_section,
+            &mut RayonBrotliWorkerPool,
+        )
+    }))
+    .map_err(|_| "brotli compression failed: panic handled".to_string())?
     .map_err(|err| format!("brotli compression failed: {err:?}"))?;
     output.truncate(written);
     Ok(output)
@@ -233,7 +295,7 @@ mod tests {
 
     #[test]
     fn round_trips_large_brotli_inputs_via_multithreaded_path() {
-        // Sized to cross DEFAULT_MULTI_THRESHOLD and exercise the worker pool.
+        // Sized to cross DEFAULT_MULTI_THRESHOLD and exercise the rayon path.
         // Moderate qualities keep the debug-build test runtime reasonable;
         // the sectioning machinery is identical at every quality.
         let compressible = b"export const value = 42; // padding padding\n".repeat(382_000);
@@ -253,10 +315,10 @@ mod tests {
     }
 
     #[test]
-    fn worker_pool_round_trips_multi_section_inputs() {
-        // The global pool's section budget depends on which test initializes
-        // it first, so pin a dedicated pool to guarantee multi-section
-        // coverage: 4 sections need 3 pool workers plus the calling thread.
+    fn rayon_spawner_round_trips_multi_section_inputs() {
+        // Drives `compress_multi` directly with more sections than the public
+        // path clamps to, so the rayon spawner is exercised with several
+        // outstanding sections at once.
         let input = b"export const value = 42; // padding padding\n".repeat(382_000);
         let num_sections = input.len() / DEFAULT_SECTION_SIZE;
         assert!(num_sections >= 4);
@@ -266,19 +328,47 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let mut pool = new_work_pool(num_sections - 1);
         let compressed =
-            compress_pooled(&params, num_sections, &mut pool, SharedInput(input.clone()))
-                .expect("compress");
+            compress_multi(&params, num_sections, SharedInput(input.clone())).expect("compress");
         assert!(compressed.len() < input.len());
         assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
+    }
+
+    #[test]
+    fn concurrent_sectioned_compressions_do_not_deadlock() {
+        // Puts every rayon worker inside a sectioned compression at once. If
+        // joining a section parked its worker instead of working the queue,
+        // no thread would be left to run the spawned sections and this would
+        // hang rather than fail.
+        use rayon::prelude::*;
+
+        let input = b"export const value = 42; // padding padding\n".repeat(24_000);
+        let section_size = 256 * 1024_u32;
+        assert!(input.len() >= 4 * section_size as usize);
+        let jobs = 8 * rayon::current_num_threads();
+        let compressed: Vec<_> = (0..jobs)
+            .into_par_iter()
+            .map(|_| {
+                compress_any(
+                    Algorithm::Brotli,
+                    5,
+                    None,
+                    Some(section_size),
+                    input.clone(),
+                )
+                .expect("compress")
+            })
+            .collect();
+        for output in compressed {
+            assert_eq!(decompress(Algorithm::Brotli, &output), input);
+        }
     }
 
     #[test]
     fn multithreaded_path_engages_for_large_inputs() {
         // Sectioned output has different block boundaries than a single
         // stream, so equality with the single-threaded encoder means the
-        // worker-pool path silently fell back (as a lazy-init bug once did).
+        // sectioned path silently fell back (as a lazy-init bug once did).
         let input = b"export const value = 42; // padding padding\n".repeat(382_000);
         assert!(input.len() >= DEFAULT_MULTI_THRESHOLD);
         let params = BrotliEncoderParams {
@@ -292,7 +382,7 @@ mod tests {
             compress_any(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
         assert_ne!(
             compressed, single,
-            "large input should take the sectioned worker-pool path, not the single-stream encoder"
+            "large input should take the sectioned rayon path, not the single-stream encoder"
         );
         assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
