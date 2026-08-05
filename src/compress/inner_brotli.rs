@@ -152,7 +152,7 @@ where
         let (alloc, extra_input) = work.replace_with_default();
         let (sender, result) = sync_channel(1);
         let input = locked_input.clone();
-        rayon::spawn(move || {
+        rayon::spawn_fifo(move || {
             let Ok(input) = input.read() else {
                 return; // poisoned; the dropped sender reports it on join
             };
