@@ -16,6 +16,9 @@ mod inner_zstd;
 use std::fmt::Display;
 use std::str::FromStr;
 
+use inner_brotli::BrotliBuf;
+use inner_zstd::ZstdContext;
+
 pub use inner_brotli::{BROTLI_DEFAULT_WINDOW_BITS, validate_section_size, validate_window_bits};
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
@@ -94,10 +97,23 @@ impl Display for Algorithm {
     }
 }
 
+/// Per-worker scratch state reused across the items one thread compresses:
+/// brotli's stream buffers and the zstd context, both expensive enough to be
+/// worth keeping alive between files. Created once per rayon worker by
+/// [`rayon::iter::ParallelIterator::map_init`] and passed down by `&mut`, so
+/// no thread-local storage is involved.
+#[derive(Default)]
+pub struct CompressMeta {
+    brotli_buf: BrotliBuf,
+    zstd: ZstdContext,
+}
+
 /// Compress `input` with the given algorithm and level.
 ///
 /// `window_bits` and `section_size` are only used by brotli and ignored by
 /// other algorithms.
+///
+/// `meta` carries the reusable per-worker scratch state; see [`CompressMeta`].
 ///
 /// Takes ownership of the input so brotli's multithreaded path can share it
 /// across worker threads without copying; it is dropped as soon as
@@ -109,12 +125,19 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
+    meta: &mut CompressMeta,
 ) -> Result<Vec<u8>, String> {
     algorithm.validate_level(level)?;
     let mut output = match algorithm {
         Algorithm::Gzip => inner_gzip::compress(level, input.as_ref()),
-        Algorithm::Brotli => inner_brotli::compress(level, window_bits, section_size, input),
-        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref()),
+        Algorithm::Brotli => inner_brotli::compress(
+            level,
+            window_bits,
+            section_size,
+            input,
+            &mut meta.brotli_buf,
+        ),
+        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref(), &mut meta.zstd),
     }?;
     // Output buffers are sized for the worst case, so compressible input
     // leaves most of the capacity unused; results are held until the JS side
@@ -129,6 +152,26 @@ mod tests {
     use std::io::Read;
 
     const ALGORITHMS: [Algorithm; 3] = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
+
+    /// Shadows [`super::compress`] with a fresh [`CompressMeta`] per call, the
+    /// one-shot equivalent of what the scheduler reuses across a worker's
+    /// items. Shared with the `inner_*` submodules' own test modules.
+    pub(super) fn compress(
+        algorithm: Algorithm,
+        level: u32,
+        window_bits: Option<u32>,
+        section_size: Option<u32>,
+        input: InputBuffer,
+    ) -> Result<Vec<u8>, String> {
+        super::compress(
+            algorithm,
+            level,
+            window_bits,
+            section_size,
+            input,
+            &mut CompressMeta::default(),
+        )
+    }
 
     /// Shared with the `inner_*` submodules' own test modules.
     pub(super) fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {

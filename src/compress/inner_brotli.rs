@@ -12,7 +12,6 @@ use brotli::enc::{
 };
 use brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher};
 use rayon::Yield;
-use std::cell::RefCell;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -204,12 +203,13 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
+    buffer: &mut BrotliBuf,
 ) -> Result<Vec<u8>, String> {
     let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
     validate_window_bits(window_bits)?;
     let section_size = section_size.unwrap_or(1 << (window_bits + 1));
     validate_section_size(section_size)?;
-    compress_sectioned(level, window_bits, section_size as usize, input)
+    compress_sectioned(level, window_bits, section_size as usize, input, buffer)
 }
 
 /// Compress large inputs by splitting them into ~`section_size` sections
@@ -240,6 +240,7 @@ fn compress_sectioned(
     window_bits: u32,
     section_size: usize,
     input: InputBuffer,
+    buffer: &mut BrotliBuf,
 ) -> Result<Vec<u8>, String> {
     let input_len = input.len();
     let params = BrotliEncoderParams {
@@ -255,36 +256,58 @@ fn compress_sectioned(
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, max_sections);
         compress_multi(&params, num_sections, SharedInput(input))
     } else {
-        compress_single(&params, input.as_ref())
+        compress_single(&params, input.as_ref(), buffer)
     }
 }
 
-thread_local! {
-    /// Scratch space for `BrotliCompressCustomAlloc`, split into an input and an
-    /// output half. Heap-backed on purpose: this crate is a `cdylib` loaded with
-    /// `dlopen`, and an inline `[u8; 8192]` blows past glibc's static TLS surplus
-    /// ("cannot allocate memory in static TLS block") once mimalloc has taken its
-    /// share, so the binding fails to load at all on linux-gnu.
-    static BROTLI_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0; BROTLI_BUFFER_SIZE * 2]);
+/// Scratch space for `BrotliCompressCustomAlloc`, split into an input and an
+/// output half, carried across the items a single rayon worker handles.
+///
+/// Deliberately not a `thread_local!`: this crate is a `cdylib` loaded with
+/// `dlopen`, and an inline `[u8; 8192]` in TLS blows past glibc's static TLS
+/// surplus ("cannot allocate memory in static TLS block") once mimalloc has
+/// taken its share, so the binding fails to load at all on linux-gnu. Owned by
+/// the caller instead, it is a plain inline array with no TLS involved.
+pub struct BrotliBuf {
+    inner: [u8; BROTLI_BUFFER_SIZE * 2],
+}
+
+impl BrotliBuf {
+    pub const fn new() -> Self {
+        BrotliBuf {
+            inner: [0; BROTLI_BUFFER_SIZE * 2],
+        }
+    }
+
+    fn split(&mut self) -> (&mut [u8], &mut [u8]) {
+        self.inner.split_at_mut(BROTLI_BUFFER_SIZE)
+    }
+}
+
+impl Default for BrotliBuf {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[hotpath::measure(label = "compress_brotli_single")]
-fn compress_single(params: &BrotliEncoderParams, input: &[u8]) -> Result<Vec<u8>, String> {
+fn compress_single(
+    params: &BrotliEncoderParams,
+    input: &[u8],
+    buffer: &mut BrotliBuf,
+) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
     let mut reader = input;
-    BROTLI_BUFFER
-        .with_borrow_mut(|buffer| {
-            let (input_buf, output_buf) = buffer.split_at_mut(BROTLI_BUFFER_SIZE);
-            brotli::BrotliCompressCustomAlloc(
-                &mut reader,
-                &mut output,
-                input_buf,
-                output_buf,
-                params,
-                StandardAlloc::default(),
-            )
-        })
-        .map_err(|err| format!("brotli compression failed: {err}"))?;
+    let (input_buf, output_buf) = buffer.split();
+    brotli::BrotliCompressCustomAlloc(
+        &mut reader,
+        &mut output,
+        input_buf,
+        output_buf,
+        params,
+        StandardAlloc::default(),
+    )
+    .map_err(|err| format!("brotli compression failed: {err}"))?;
     Ok(output)
 }
 
@@ -319,8 +342,8 @@ fn compress_multi(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compress::tests::{decompress, pseudo_random};
-    use crate::compress::{Algorithm, compress as compress_any};
+    use crate::compress::Algorithm;
+    use crate::compress::tests::{compress as compress_any, decompress, pseudo_random};
 
     /// Default section size (two windows, `2^(window_bits + 1)` bytes) and the
     /// multi-section threshold derived from it, mirroring the on-the-fly
@@ -411,7 +434,8 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let single = compress_single(&params, input.as_ref()).expect("compress");
+        let single =
+            compress_single(&params, input.as_ref(), &mut BrotliBuf::new()).expect("compress");
         let compressed =
             compress_any(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
         assert_ne!(
@@ -484,7 +508,8 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let single = compress_single(&params, input.as_ref()).expect("compress");
+        let single =
+            compress_single(&params, input.as_ref(), &mut BrotliBuf::new()).expect("compress");
         let compressed = compress_any(Algorithm::Brotli, 5, Some(window_bits), None, input.clone())
             .expect("compress");
         assert_ne!(

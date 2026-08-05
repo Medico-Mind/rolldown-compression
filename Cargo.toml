@@ -15,17 +15,17 @@ hotpath = "0.23"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
 napi-derive = "3"
 rayon = "1.12"
-zstd = "0.13"
+zstd = { version = "0.13", default-features = false }
 
 [features]
-# Opt-in profiling. Off by default: every hotpath macro expands to a noop and
-# the crate pulls in no third-party dependencies, so a normal build is
-# unaffected at compile time and at runtime.
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath-alloc"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = "0.1"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+zstd = { version = "0.13", default-features = false, features = ["no_asm"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = { version = "0.1", features = ["local_dynamic_tls"] }
