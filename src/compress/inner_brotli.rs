@@ -175,7 +175,7 @@ where
 /// Compress `input` with brotli, applying the brotli-only defaults for
 /// `window_bits` and `section_size` when the caller left them unset.
 ///
-/// The section size defaults to one full window: sections much smaller than
+/// The section size defaults to two full windows: sections much smaller than
 /// the window lose too many cross-section matches.
 pub fn compress(
     level: u32,
@@ -185,7 +185,7 @@ pub fn compress(
 ) -> Result<Vec<u8>, String> {
     let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
     validate_window_bits(window_bits)?;
-    let section_size = section_size.unwrap_or(1 << window_bits);
+    let section_size = section_size.unwrap_or(1 << (window_bits + 1));
     validate_section_size(section_size)?;
     compress_sectioned(level, window_bits, section_size as usize, input)
 }
@@ -194,9 +194,9 @@ pub fn compress(
 /// spread over the rayon pool; smaller inputs stay in one section on the
 /// calling thread.
 ///
-/// Inputs at least four times `section_size` are split (16 MiB at the
-/// default section size); below that a cross-file rayon batch already keeps
-/// all cores busy and splitting would only cost ratio. The section count is
+/// Inputs holding at least `BROTLI_MIN_SECTIONS` full sections are split
+/// (16 MiB at the default section size); below that a cross-file rayon batch
+/// already keeps all cores busy and splitting would only cost ratio. The section count is
 /// derived from the input length alone, so output bytes are reproducible
 /// across machines and `concurrency` settings. Sectioning costs a fraction of
 /// a percent of ratio versus a single stream, in exchange for finishing the
@@ -215,7 +215,7 @@ fn compress_sectioned(
         size_hint: input_len,
         ..Default::default()
     };
-    if input_len >= 4 * section_size {
+    if input_len >= BROTLI_MIN_SECTIONS * section_size {
         let num_sections =
             (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, BROTLI_MAX_SECTIONS);
         compress_multi(&params, num_sections, SharedInput(input))
@@ -287,11 +287,11 @@ mod tests {
     use crate::compress::tests::{decompress, pseudo_random};
     use crate::compress::{Algorithm, compress as compress_any};
 
-    /// Default section size (one window, `2^window_bits` bytes) and the
+    /// Default section size (two windows, `2^(window_bits + 1)` bytes) and the
     /// multi-section threshold derived from it, mirroring the on-the-fly
     /// computation in `compress`.
-    const DEFAULT_SECTION_SIZE: usize = 1 << BROTLI_DEFAULT_WINDOW_BITS;
-    const DEFAULT_MULTI_THRESHOLD: usize = 4 * DEFAULT_SECTION_SIZE;
+    const DEFAULT_SECTION_SIZE: usize = 1 << (BROTLI_DEFAULT_WINDOW_BITS + 1);
+    const DEFAULT_MULTI_THRESHOLD: usize = BROTLI_MIN_SECTIONS * DEFAULT_SECTION_SIZE;
 
     #[test]
     fn round_trips_large_brotli_inputs_via_multithreaded_path() {
@@ -320,8 +320,7 @@ mod tests {
         // path clamps to, so the rayon spawner is exercised with several
         // outstanding sections at once.
         let input = b"export const value = 42; // padding padding\n".repeat(382_000);
-        let num_sections = input.len() / DEFAULT_SECTION_SIZE;
-        assert!(num_sections >= 4);
+        let num_sections = BROTLI_MAX_SECTIONS + 2;
         let params = BrotliEncoderParams {
             quality: 5,
             lgwin: BROTLI_DEFAULT_WINDOW_BITS as i32,
@@ -344,7 +343,7 @@ mod tests {
 
         let input = b"export const value = 42; // padding padding\n".repeat(24_000);
         let section_size = 256 * 1024_u32;
-        assert!(input.len() >= 4 * section_size as usize);
+        assert!(input.len() >= BROTLI_MIN_SECTIONS * section_size as usize);
         let jobs = 8 * rayon::current_num_threads();
         let compressed: Vec<_> = (0..jobs)
             .into_par_iter()
@@ -418,7 +417,7 @@ mod tests {
         // that the default section size would compress single-threaded.
         let input = b"export const value = 42; // padding padding\n".repeat(24_000);
         let section_size = 256 * 1024_u32;
-        assert!(input.len() >= 4 * section_size as usize);
+        assert!(input.len() >= BROTLI_MIN_SECTIONS * section_size as usize);
         assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
         let compressed = compress_any(
             Algorithm::Brotli,
@@ -434,15 +433,15 @@ mod tests {
 
     #[test]
     fn derives_default_section_size_from_window_bits() {
-        // With no explicit section size the default is one window
-        // (2^windowBits bytes), so windowBits 18 gives 256 KiB sections and
-        // this ~1 MB input crosses the 4x multithreading threshold that the
-        // default window would compress single-threaded. Sectioned output
+        // With no explicit section size the default is two windows
+        // (2^(windowBits + 1) bytes), so windowBits 18 gives 512 KiB sections
+        // and this ~1 MB input crosses the 2x multithreading threshold that
+        // the default window would compress single-threaded. Sectioned output
         // differs from the single-stream encoder's, which proves the
         // derived default engaged the worker-pool path.
         let input = b"export const value = 42; // padding padding\n".repeat(24_000);
         let window_bits = 18_u32;
-        assert!(input.len() >= 4 << window_bits);
+        assert!(input.len() >= BROTLI_MIN_SECTIONS << (window_bits + 1));
         assert!(input.len() < DEFAULT_MULTI_THRESHOLD);
         let params = BrotliEncoderParams {
             quality: 5,
