@@ -15,8 +15,8 @@ use rayon::Yield;
 use std::cell::RefCell;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
 use std::time::Duration;
 
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
