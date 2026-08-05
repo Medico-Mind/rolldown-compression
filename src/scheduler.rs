@@ -152,6 +152,10 @@ mod tests {
 
     #[test]
     fn batch_is_deterministic_across_thread_counts() {
+        // Scheduling never affects output for inputs this size. Brotli inputs
+        // past `threads * sectionSize` are the one exception — they are cut
+        // into as many sections as the pool is wide — so keep the fixtures
+        // well under the sectioning threshold.
         let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
 
         let single = run_batch_on_pool(make_items(&inputs), 1, false);

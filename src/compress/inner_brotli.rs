@@ -23,7 +23,6 @@ use std::time::Duration;
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
 const BROTLI_MIN_SECTIONS: usize = 2;
-const BROTLI_MAX_SECTIONS: usize = 4;
 const BROTLI_BUFFER_SIZE: usize = 4096;
 
 /// How long [`RayonJoinable::join`] parks once rayon reports nothing left to
@@ -219,11 +218,22 @@ pub fn compress(
 ///
 /// Inputs holding at least `BROTLI_MIN_SECTIONS` full sections are split
 /// (16 MiB at the default section size); below that a cross-file rayon batch
-/// already keeps all cores busy and splitting would only cost ratio. The section count is
-/// derived from the input length alone, so output bytes are reproducible
-/// across machines and `concurrency` settings. Sectioning costs a fraction of
-/// a percent of ratio versus a single stream, in exchange for finishing the
-/// large files that dominate a batch tail several times faster.
+/// already keeps all cores busy and splitting would only cost ratio.
+/// Sectioning costs a fraction of a percent of ratio versus a single stream,
+/// in exchange for finishing the large files that dominate a batch tail
+/// several times faster.
+///
+/// The count is one section per full `section_size`, capped at one section per
+/// rayon worker: past that, sections queue behind each other in uneven waves
+/// and the extra split only costs ratio. Measured on 100 MiB of JS at quality
+/// 11 with 18 workers: 4 sections 19.0s, 12 sections 8.2s, 18 sections 6.1s,
+/// 24 sections 8.1s, with 0.1% between the smallest and largest output.
+///
+/// Below the cap the count follows the input length alone, so those inputs
+/// compress to the same bytes on every machine; inputs past
+/// `threads * section_size` are cut into as many sections as the pool is wide,
+/// so their bytes depend on the pool size — the machine's core count, or
+/// `concurrency` when it is set.
 #[hotpath::measure(label = "compress_brotli")]
 fn compress_sectioned(
     quality: u32,
@@ -239,8 +249,10 @@ fn compress_sectioned(
         ..Default::default()
     };
     if input_len >= BROTLI_MIN_SECTIONS * section_size {
-        let num_sections =
-            (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, BROTLI_MAX_SECTIONS);
+        // `max` keeps the bound above the minimum on a one-thread pool, where
+        // `clamp` would otherwise panic on an inverted range.
+        let max_sections = rayon::current_num_threads().max(BROTLI_MIN_SECTIONS);
+        let num_sections = (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, max_sections);
         compress_multi(&params, num_sections, SharedInput(input))
     } else {
         compress_single(&params, input.as_ref())
@@ -340,10 +352,10 @@ mod tests {
     #[test]
     fn rayon_spawner_round_trips_multi_section_inputs() {
         // Drives `compress_multi` directly with more sections than the public
-        // path clamps to, so the rayon spawner is exercised with several
-        // outstanding sections at once.
+        // path clamps to, so the rayon spawner is exercised with more
+        // outstanding sections than there are workers to run them.
         let input = b"export const value = 42; // padding padding\n".repeat(382_000);
-        let num_sections = BROTLI_MAX_SECTIONS + 2;
+        let num_sections = rayon::current_num_threads() + 2;
         let params = BrotliEncoderParams {
             quality: 5,
             lgwin: BROTLI_DEFAULT_WINDOW_BITS as i32,
