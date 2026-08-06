@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 2.3.1
+
+### Patch Changes
+
+- [`505b8a9`](https://github.com/Medico-Mind/rolldown-compression/commit/505b8a91f06acb2a971a845b5d174ef034c27c41) Thanks [@Mnwa](https://github.com/Mnwa)! - Rename CompressMeta to CompressState. Use lazy cell for state items
+
+- [`08cbbbb`](https://github.com/Medico-Mind/rolldown-compression/commit/08cbbbbe5bf493b5390359403c5bd1b4abe1a2bc) Thanks [@Mnwa](https://github.com/Mnwa)! - Sort tasks to concat same compression level closer.
+
 ## 2.3.0
 
 ### Minor Changes
