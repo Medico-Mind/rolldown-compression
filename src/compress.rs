@@ -13,6 +13,7 @@ mod inner_brotli;
 mod inner_gzip;
 mod inner_zstd;
 
+use std::cell::LazyCell;
 use std::fmt::Display;
 use std::str::FromStr;
 
@@ -103,9 +104,9 @@ impl Display for Algorithm {
 /// [`rayon::iter::ParallelIterator::map_init`] and passed down by `&mut`, so
 /// no thread-local storage is involved.
 #[derive(Default)]
-pub struct CompressMeta {
-    brotli_buf: BrotliBuf,
-    zstd: ZstdContext,
+pub struct CompressState {
+    brotli_buf: LazyCell<BrotliBuf>,
+    zstd: LazyCell<ZstdContext>,
 }
 
 /// Compress `input` with the given algorithm and level.
@@ -113,7 +114,7 @@ pub struct CompressMeta {
 /// `window_bits` and `section_size` are only used by brotli and ignored by
 /// other algorithms.
 ///
-/// `meta` carries the reusable per-worker scratch state; see [`CompressMeta`].
+/// `state` carries the reusable per-worker scratch state; see [`CompressState`].
 ///
 /// Takes ownership of the input so brotli's multithreaded path can share it
 /// across worker threads without copying; it is dropped as soon as
@@ -125,7 +126,7 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
-    meta: &mut CompressMeta,
+    state: &mut CompressState,
 ) -> Result<Vec<u8>, String> {
     algorithm.validate_level(level)?;
     let mut output = match algorithm {
@@ -135,9 +136,9 @@ pub fn compress(
             window_bits,
             section_size,
             input,
-            &mut meta.brotli_buf,
+            &mut state.brotli_buf,
         ),
-        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref(), &mut meta.zstd),
+        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref(), &mut state.zstd),
     }?;
     // Output buffers are sized for the worst case, so compressible input
     // leaves most of the capacity unused; results are held until the JS side
@@ -153,7 +154,7 @@ mod tests {
 
     const ALGORITHMS: [Algorithm; 3] = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
 
-    /// Shadows [`super::compress`] with a fresh [`CompressMeta`] per call, the
+    /// Shadows [`super::compress`] with a fresh [`CompressState`] per call, the
     /// one-shot equivalent of what the scheduler reuses across a worker's
     /// items. Shared with the `inner_*` submodules' own test modules.
     pub(super) fn compress(
@@ -169,7 +170,7 @@ mod tests {
             window_bits,
             section_size,
             input,
-            &mut CompressMeta::default(),
+            &mut CompressState::default(),
         )
     }
 

@@ -7,7 +7,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use rayon::prelude::*;
 
-use crate::compress::{Algorithm, CompressMeta, InputBuffer, compress};
+use crate::compress::{Algorithm, CompressState, InputBuffer, compress};
 
 /// A single unit of compression work.
 ///
@@ -53,7 +53,7 @@ pub fn run_batch(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<Ba
 
     items
         .into_par_iter()
-        .map_init(CompressMeta::default, |meta, item| {
+        .map_init(CompressState::default, |meta, item| {
             run_one(item, skip_if_larger_or_equal, meta)
         })
         .collect_into_vec(&mut outcomes);
@@ -65,7 +65,7 @@ pub fn run_batch(items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<Ba
 fn run_one(
     item: BatchItem,
     skip_if_larger_or_equal: bool,
-    meta: &mut CompressMeta,
+    meta: &mut CompressState,
 ) -> BatchOutcome {
     let input_len = item.input.len();
     let algorithm = item.algorithm;
