@@ -8,7 +8,7 @@
 
 Fast, native compression plugin for [Rolldown](https://rolldown.rs) and [Vite 8+](#usage-with-vite): compresses emitted assets with **gzip**, **brotli** and **zstd** at build time. The compression core is written in Rust (napi-rs + rayon) — one batched FFI call per build, fanned out across all CPU cores, without ever blocking the JS event loop.
 
-**3x faster builds in a real project**: switching a production app from `node:zlib`-based (node v26.4.0) compression to this plugin cut total build time from 3:50 to 1:13 (740% → 688% CPU utilization) — see [real-world results](#real-world-results).
+**~5x faster builds in a real project**: switching a production app from `node:zlib`-based (node v26.4.0) compression to this plugin cut total build time from 4:21 to 53s (343% → 1378% CPU utilization) — see [real-world results](#real-world-results).
 
 API ergonomics mirror [`vite-plugin-compression2`](https://github.com/nonzzz/vite-plugin-compression); see [differences](#differences-from-vite-plugin-compression2).
 
@@ -178,14 +178,14 @@ example.com {
 
 ### Real-world results
 
-Switching a production app's build from `node:zlib`-based compression to this plugin (same algorithms and levels):
+Switching a production app's build from `node:zlib`-based compression to this plugin (same algorithms and levels), on an Apple M5 Pro (18 cores), Node 26:
 
 ```
-before: npm run build  675.82s user 4.63s system 294% cpu 3:50.92 total
-after:  npm run build  537.24s user 5.59s system 740% cpu 1:13.29 total
+before: npm run build  890.47s user 4.43s system 343% cpu 4:20.62 total
+after:  npm run build  724.15s user 6.24s system 1378% cpu 52.983 total
 ```
 
-**4.03x faster wall clock.** Compression stops being serialized behind the libuv thread pool (default `UV_THREADPOOL_SIZE=4`) and runs on all cores instead — CPU utilization jumps from 235% to 784%.
+**4.92x faster wall clock.** Compression stops being serialized behind the libuv thread pool (default `UV_THREADPOOL_SIZE=4`) and runs on all cores instead — CPU utilization jumps from 343% to 1378%. Total CPU time also drops (895s → 730s), so the win is not purely parallelism: the native gzip/zstd backends do less work per byte than node's bundled zlib.
 
 ### Synthetic benchmark
 
