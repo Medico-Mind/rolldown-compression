@@ -8,7 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use rayon::prelude::*;
 
-use crate::compress::{Algorithm, CompressState, InputBuffer, compress};
+use crate::compress::{Algorithm, InputBuffer, compress};
 
 /// A single unit of compression work.
 ///
@@ -83,9 +83,8 @@ pub fn run_batch(mut items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Ve
 
     items
         .into_par_iter()
-        .map_init(CompressState::default, |meta, item| {
-            run_one(item, skip_if_larger_or_equal, meta)
-        })
+        .with_max_len(1)
+        .map(|item| run_one(item, skip_if_larger_or_equal))
         .collect_into_vec(&mut outcomes);
 
     // Outcomes come back in scheduled order; `order` says where each belongs.
@@ -126,11 +125,7 @@ fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
 }
 
 #[hotpath::measure]
-fn run_one(
-    item: BatchItem,
-    skip_if_larger_or_equal: bool,
-    meta: &mut CompressState,
-) -> BatchOutcome {
+fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
     let input_len = item.input.len();
     let algorithm = item.algorithm;
     // `compress` consumes the input and drops it as soon as compression
@@ -143,7 +138,6 @@ fn run_one(
             item.window_bits,
             item.section_size,
             item.input,
-            meta,
         )
     }))
     .unwrap_or_else(|_| Err(format!("{} compression panicked unexpectedly", algorithm)));

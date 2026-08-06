@@ -13,12 +13,8 @@ mod inner_brotli;
 mod inner_gzip;
 mod inner_zstd;
 
-use std::cell::LazyCell;
 use std::fmt::Display;
 use std::str::FromStr;
-
-use inner_brotli::BrotliBuf;
-use inner_zstd::ZstdContext;
 
 pub use inner_brotli::{BROTLI_DEFAULT_WINDOW_BITS, validate_section_size, validate_window_bits};
 
@@ -98,17 +94,6 @@ impl Display for Algorithm {
     }
 }
 
-/// Per-worker scratch state reused across the items one thread compresses:
-/// brotli's stream buffers and the zstd context, both expensive enough to be
-/// worth keeping alive between files. Created once per rayon worker by
-/// [`rayon::iter::ParallelIterator::map_init`] and passed down by `&mut`, so
-/// no thread-local storage is involved.
-#[derive(Default)]
-pub struct CompressState {
-    brotli_buf: LazyCell<BrotliBuf>,
-    zstd: LazyCell<ZstdContext>,
-}
-
 /// Compress `input` with the given algorithm and level.
 ///
 /// `window_bits` and `section_size` are only used by brotli and ignored by
@@ -126,19 +111,12 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
-    state: &mut CompressState,
 ) -> Result<Vec<u8>, String> {
     algorithm.validate_level(level)?;
     let mut output = match algorithm {
         Algorithm::Gzip => inner_gzip::compress(level, input.as_ref()),
-        Algorithm::Brotli => inner_brotli::compress(
-            level,
-            window_bits,
-            section_size,
-            input,
-            &mut state.brotli_buf,
-        ),
-        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref(), &mut state.zstd),
+        Algorithm::Brotli => inner_brotli::compress(level, window_bits, section_size, input),
+        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref()),
     }?;
     // Output buffers are sized for the worst case, so compressible input
     // leaves most of the capacity unused; results are held until the JS side
@@ -164,14 +142,7 @@ mod tests {
         section_size: Option<u32>,
         input: InputBuffer,
     ) -> Result<Vec<u8>, String> {
-        super::compress(
-            algorithm,
-            level,
-            window_bits,
-            section_size,
-            input,
-            &mut CompressState::default(),
-        )
+        super::compress(algorithm, level, window_bits, section_size, input)
     }
 
     /// Shared with the `inner_*` submodules' own test modules.

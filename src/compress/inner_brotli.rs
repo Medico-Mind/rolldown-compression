@@ -12,6 +12,7 @@ use brotli::enc::{
 };
 use brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher};
 use rayon::Yield;
+use std::cell::{LazyCell, RefCell};
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -203,13 +204,12 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
-    buffer: &mut BrotliBuf,
 ) -> Result<Vec<u8>, String> {
     let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
     validate_window_bits(window_bits)?;
     let section_size = section_size.unwrap_or(1 << (window_bits + 1));
     validate_section_size(section_size)?;
-    compress_sectioned(level, window_bits, section_size as usize, input, buffer)
+    compress_sectioned(level, window_bits, section_size as usize, input)
 }
 
 /// Compress large inputs by splitting them into ~`section_size` sections
@@ -240,7 +240,6 @@ fn compress_sectioned(
     window_bits: u32,
     section_size: usize,
     input: InputBuffer,
-    buffer: &mut BrotliBuf,
 ) -> Result<Vec<u8>, String> {
     let input_len = input.len();
     let params = BrotliEncoderParams {
@@ -256,29 +255,21 @@ fn compress_sectioned(
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, max_sections);
         compress_multi(&params, num_sections, SharedInput(input))
     } else {
-        compress_single(&params, input.as_ref(), buffer)
+        BROTLI_BUFFER.with_borrow_mut(|buffer| compress_single(&params, input.as_ref(), buffer))
     }
+}
+
+thread_local! {
+    static BROTLI_BUFFER: RefCell<LazyCell<BrotliBuf>> = Default::default();
 }
 
 /// Scratch space for `BrotliCompressCustomAlloc`, split into an input and an
 /// output half, carried across the items a single rayon worker handles.
-///
-/// Deliberately not a `thread_local!`: this crate is a `cdylib` loaded with
-/// `dlopen`, and an inline `[u8; 8192]` in TLS blows past glibc's static TLS
-/// surplus ("cannot allocate memory in static TLS block") once mimalloc has
-/// taken its share, so the binding fails to load at all on linux-gnu. Owned by
-/// the caller instead, it is a plain inline array with no TLS involved.
 pub struct BrotliBuf {
-    inner: [u8; BROTLI_BUFFER_SIZE * 2],
+    inner: Vec<u8>,
 }
 
 impl BrotliBuf {
-    pub const fn new() -> Self {
-        BrotliBuf {
-            inner: [0; BROTLI_BUFFER_SIZE * 2],
-        }
-    }
-
     fn split(&mut self) -> (&mut [u8], &mut [u8]) {
         self.inner.split_at_mut(BROTLI_BUFFER_SIZE)
     }
@@ -286,7 +277,9 @@ impl BrotliBuf {
 
 impl Default for BrotliBuf {
     fn default() -> Self {
-        Self::new()
+        BrotliBuf {
+            inner: vec![0; BROTLI_BUFFER_SIZE * 2],
+        }
     }
 }
 
@@ -435,7 +428,7 @@ mod tests {
             ..Default::default()
         };
         let single =
-            compress_single(&params, input.as_ref(), &mut BrotliBuf::new()).expect("compress");
+            compress_single(&params, input.as_ref(), &mut BrotliBuf::default()).expect("compress");
         let compressed =
             compress_any(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
         assert_ne!(
@@ -509,7 +502,7 @@ mod tests {
             ..Default::default()
         };
         let single =
-            compress_single(&params, input.as_ref(), &mut BrotliBuf::new()).expect("compress");
+            compress_single(&params, input.as_ref(), &mut BrotliBuf::default()).expect("compress");
         let compressed = compress_any(Algorithm::Brotli, 5, Some(window_bits), None, input.clone())
             .expect("compress");
         assert_ne!(
