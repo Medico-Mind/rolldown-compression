@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.3.2
+
+### Patch Changes
+
+- [`15f6ce3`](https://github.com/Medico-Mind/rolldown-compression/commit/15f6ce3c4b7bc4818ee65f97237181d0678316ff) Thanks [@Mnwa](https://github.com/Mnwa)! - Return thread_local and use max_len 1 to improve concurrency
+
 ## 2.3.1
 
 ### Patch Changes
