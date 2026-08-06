@@ -1,6 +1,6 @@
 {
   "name": "@medicomind/rolldown-compression-wasm32-wasi",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "main": "rolldown-compression.wasi.cjs",
   "files": [
     "rolldown-compression.wasm32-wasi.wasm",
