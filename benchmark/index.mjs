@@ -39,7 +39,6 @@ async function runNative(files, tasks) {
       level,
     })),
     tasks.map(({ fileIndex }) => files[fileIndex].data),
-      {concurrency: 4},
   )
   const elapsed = performance.now() - started
   for (const result of results) {
