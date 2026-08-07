@@ -1,34 +1,21 @@
 //! Brotli-specific compression: parameter validation, the rayon-backed
 //! sectioned path, and the single-stream fallback.
 
+mod buf;
+mod pool;
+mod shared_input;
+
 use super::InputBuffer;
-use brotli::Allocator;
-use brotli::enc::threading::{
-    BrotliEncoderThreadError, CompressMulti, InternalOwned, InternalSendAlloc, Joinable, Owned,
-    OwnedRetriever, PoisonedThreadError, SendAlloc,
-};
-use brotli::enc::{
-    BatchSpawnableLite, BrotliAlloc, BrotliEncoderMaxCompressedSize, BrotliEncoderParams,
-};
+use brotli::enc::threading::{CompressMulti, Owned, SendAlloc};
+use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
 use brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher};
-use rayon::Yield;
-use std::cell::{LazyCell, RefCell};
-use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, sync_channel};
-use std::time::Duration;
 
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
 const BROTLI_MIN_SECTIONS: usize = 2;
 const BROTLI_BUFFER_SIZE: usize = 4096;
-
-/// How long [`RayonJoinable::join`] parks once rayon reports nothing left to
-/// steal. Short enough that a section becoming stealable again is picked up
-/// promptly, long enough not to spin.
-const BROTLI_JOIN_POLL_INTERVAL: Duration = Duration::from_micros(250);
 
 /// Validate a brotli window size (log2 of window size, `lgwin`).
 pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {
@@ -48,150 +35,6 @@ pub fn validate_section_size(section_size: u32) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Owned input for [`CompressMulti`], which shares the buffer across section
-/// tasks and therefore cannot borrow it. Newtype because the orphan rule
-/// forbids implementing brotli's `SliceWrapper` for [`InputBuffer`] directly.
-struct SharedInput(InputBuffer);
-
-impl SliceWrapper<u8> for SharedInput {
-    fn slice(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-/// Section spawner for [`CompressMulti`] backed by the global rayon pool.
-///
-/// Brotli's own `WorkerPool` owns dedicated OS threads that have to be kept
-/// alive between calls to be worth their spawn cost. Running sections on rayon
-/// instead means they share the very threads that already run the surrounding
-/// per-file batch: no extra threads, no pool lifecycle, and no oversubscription
-/// when many large files are compressed at once.
-#[derive(Copy, Clone)]
-struct RayonBrotliWorkerPool;
-
-/// The input shared with every in-flight section.
-///
-/// Sections only ever read it — brotli's own spawners reach for
-/// `Arc<RwLock<U>>` because that is the one [`OwnedRetriever`] impl the crate
-/// ships, not because anything writes — so a bare [`Arc`] carries it with no
-/// lock to take and no poisoning to handle. `U: Sync` at the spawn site is what
-/// makes sharing `&U` across sections sound.
-struct SharedSections<U>(Arc<U>);
-
-impl<U: Send + 'static> OwnedRetriever<U> for SharedSections<U> {
-    fn view<T, F: FnOnce(&U) -> T>(&self, f: F) -> Result<T, PoisonedThreadError> {
-        Ok(f(&self.0))
-    }
-
-    /// `CompressMulti` calls this to take the input back once every section is
-    /// joined; it only succeeds if no section still holds a clone.
-    fn unwrap(self) -> Result<U, PoisonedThreadError> {
-        Arc::try_unwrap(self.0).map_err(|_| PoisonedThreadError::default())
-    }
-}
-
-/// Handle to one section handed to rayon; its result arrives over a one-shot
-/// channel.
-struct RayonJoinable<ReturnValue> {
-    result: Receiver<ReturnValue>,
-}
-
-impl<ReturnValue: Send + 'static> Joinable<ReturnValue, BrotliEncoderThreadError>
-    for RayonJoinable<ReturnValue>
-{
-    fn join(self) -> Result<ReturnValue, BrotliEncoderThreadError> {
-        loop {
-            match self.result.try_recv() {
-                Ok(result) => return Ok(result),
-                // The task dropped its sender without sending: the input lock
-                // was poisoned, or the section itself panicked.
-                Err(TryRecvError::Disconnected) => {
-                    return Err(BrotliEncoderThreadError::OtherThreadPanic);
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-            // `CompressMulti` compresses the last section inline and only then
-            // joins the rest, so this runs on a rayon worker. Blocking it
-            // outright would take a thread away from the very sections being
-            // waited on — and with every worker inside a large-file compression
-            // at once, that deadlocks. Work off the queue instead of parking.
-            match rayon::yield_now() {
-                Some(Yield::Executed) => continue,
-                // Nothing stealable: the outstanding sections are already
-                // running elsewhere, so park briefly rather than spin, then
-                // offer to help again in case new work showed up.
-                Some(Yield::Idle) => match self.result.recv_timeout(BROTLI_JOIN_POLL_INTERVAL) {
-                    Ok(result) => return Ok(result),
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    Err(RecvTimeoutError::Disconnected) => {
-                        return Err(BrotliEncoderThreadError::OtherThreadPanic);
-                    }
-                },
-                // Not a rayon worker (a single-file call, or a test): there is
-                // no queue to help with, so a plain block is both correct and
-                // cheapest.
-                None => {
-                    return self
-                        .result
-                        .recv()
-                        .map_err(|_| BrotliEncoderThreadError::OtherThreadPanic);
-                }
-            }
-        }
-    }
-}
-
-impl<
-    ReturnValue: Send + 'static,
-    ExtraInput: Send + 'static,
-    Alloc: BrotliAlloc + Send + 'static,
-    U: Send + 'static + Sync,
-> BatchSpawnableLite<ReturnValue, ExtraInput, Alloc, U> for RayonBrotliWorkerPool
-where
-    <Alloc as Allocator<u8>>::AllocatedMemory: Send + 'static,
-{
-    type JoinHandle = RayonJoinable<ReturnValue>;
-    type FinalJoinHandle = SharedSections<U>;
-
-    fn make_spawner(&mut self, input: &mut Owned<U>) -> Self::FinalJoinHandle {
-        SharedSections(Arc::new(
-            mem::replace(input, Owned(InternalOwned::Borrowed)).unwrap(),
-        ))
-    }
-
-    fn spawn(
-        &mut self,
-        shared_input: &mut Self::FinalJoinHandle,
-        work: &mut SendAlloc<ReturnValue, ExtraInput, Alloc, Self::JoinHandle>,
-        index: usize,
-        num_threads: usize,
-        f: fn(ExtraInput, usize, usize, &U, Alloc) -> ReturnValue,
-    ) {
-        let (alloc, extra_input) = work.replace_with_default();
-        let (sender, result) = sync_channel(1);
-        let input = shared_input.0.clone();
-        rayon::spawn_fifo(move || {
-            // A panic escaping here would reach rayon's default panic handler
-            // and abort the process. Dropping the sender instead turns it into
-            // an ordinary `Err` from `compress`.
-            let section = catch_unwind(AssertUnwindSafe(|| {
-                f(extra_input, index, num_threads, &input, alloc)
-            }));
-            // Release our share of the input *before* publishing the result:
-            // the joining thread reclaims it with `Arc::try_unwrap` as soon as
-            // the last section is joined, and that fails while this clone is
-            // still alive. Brotli's own worker pool orders these the same way.
-            drop(input);
-            if let Ok(section) = section {
-                // A gone receiver means `CompressMulti` bailed out before
-                // joining this section, which is normal on its error paths.
-                let _ = sender.send(section);
-            }
-        });
-        *work = SendAlloc(InternalSendAlloc::Join(RayonJoinable { result }));
-    }
 }
 
 /// Compress `input` with brotli, applying the brotli-only defaults for
@@ -253,33 +96,10 @@ fn compress_sectioned(
         // `clamp` would otherwise panic on an inverted range.
         let max_sections = rayon::current_num_threads().max(BROTLI_MIN_SECTIONS);
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, max_sections);
-        compress_multi(&params, num_sections, SharedInput(input))
+        compress_multi(&params, num_sections, shared_input::SharedInput(input))
     } else {
-        BROTLI_BUFFER.with_borrow_mut(|buffer| compress_single(&params, input.as_ref(), buffer))
-    }
-}
-
-thread_local! {
-    static BROTLI_BUFFER: RefCell<LazyCell<BrotliBuf>> = Default::default();
-}
-
-/// Scratch space for `BrotliCompressCustomAlloc`, split into an input and an
-/// output half, carried across the items a single rayon worker handles.
-pub struct BrotliBuf {
-    inner: Vec<u8>,
-}
-
-impl BrotliBuf {
-    fn split(&mut self) -> (&mut [u8], &mut [u8]) {
-        self.inner.split_at_mut(BROTLI_BUFFER_SIZE)
-    }
-}
-
-impl Default for BrotliBuf {
-    fn default() -> Self {
-        BrotliBuf {
-            inner: vec![0; BROTLI_BUFFER_SIZE * 2],
-        }
+        buf::BROTLI_BUFFER
+            .with_borrow_mut(|buffer| compress_single(&params, input.as_ref(), buffer))
     }
 }
 
@@ -287,7 +107,7 @@ impl Default for BrotliBuf {
 fn compress_single(
     params: &BrotliEncoderParams,
     input: &[u8],
-    buffer: &mut BrotliBuf,
+    buffer: &mut buf::BrotliBuf,
 ) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
     let mut reader = input;
@@ -308,7 +128,7 @@ fn compress_single(
 fn compress_multi(
     params: &BrotliEncoderParams,
     num_sections: usize,
-    input: SharedInput,
+    input: shared_input::SharedInput,
 ) -> Result<Vec<u8>, String> {
     let input_len = input.slice().len();
     let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input_len, num_sections)];
@@ -323,7 +143,7 @@ fn compress_multi(
             &mut Owned::new(input),
             &mut output,
             &mut alloc_per_section,
-            &mut RayonBrotliWorkerPool,
+            &mut pool::RayonBrotliWorkerPool,
         )
     }))
     .map_err(|_| "brotli compression failed: panic handled".to_string())?
@@ -378,8 +198,12 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let compressed =
-            compress_multi(&params, num_sections, SharedInput(input.clone())).expect("compress");
+        let compressed = compress_multi(
+            &params,
+            num_sections,
+            shared_input::SharedInput(input.clone()),
+        )
+        .expect("compress");
         assert!(compressed.len() < input.len());
         assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
@@ -427,8 +251,8 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let single =
-            compress_single(&params, input.as_ref(), &mut BrotliBuf::default()).expect("compress");
+        let single = compress_single(&params, input.as_ref(), &mut buf::BrotliBuf::default())
+            .expect("compress");
         let compressed =
             compress_any(Algorithm::Brotli, 5, None, None, input.clone()).expect("compress");
         assert_ne!(
@@ -501,8 +325,8 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let single =
-            compress_single(&params, input.as_ref(), &mut BrotliBuf::default()).expect("compress");
+        let single = compress_single(&params, input.as_ref(), &mut buf::BrotliBuf::default())
+            .expect("compress");
         let compressed = compress_any(Algorithm::Brotli, 5, Some(window_bits), None, input.clone())
             .expect("compress");
         assert_ne!(
