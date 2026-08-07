@@ -66,14 +66,8 @@ pub fn compress(
     // holds callers to.
     let input_window_bits = input
         .len()
-        .checked_ilog2()
-        .map(|mut i| {
-            if input.len() > 1 << i {
-                i += 1
-            }
-            i
-        })
-        .unwrap_or(*WINDOW_BITS_RANGE.start())
+        .next_power_of_two()
+        .trailing_zeros()
         .clamp(*WINDOW_BITS_RANGE.start(), *WINDOW_BITS_RANGE.end());
     let window_bits = window_bits.min(input_window_bits);
     // Deriving the section size from the shrunken window is safe: the window
