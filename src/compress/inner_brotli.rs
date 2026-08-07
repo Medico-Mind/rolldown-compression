@@ -15,7 +15,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub const BROTLI_DEFAULT_WINDOW_BITS: u32 = 22;
 
 const BROTLI_MIN_SECTIONS: usize = 2;
-const BROTLI_BUFFER_SIZE: usize = 4096;
 
 /// Validate a brotli window size (log2 of window size, `lgwin`).
 pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {

@@ -1,5 +1,6 @@
-use crate::compress::inner_brotli::BROTLI_BUFFER_SIZE;
 use std::cell::{LazyCell, RefCell};
+
+const BROTLI_BUFFER_SIZE: usize = 4096;
 
 thread_local! {
     pub static BROTLI_BUFFER: RefCell<LazyCell<BrotliBuf>> = Default::default();
