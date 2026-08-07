@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 2.3.3
+
+### Patch Changes
+
+- [`4a0fe1a`](https://github.com/Medico-Mind/rolldown-compression/commit/4a0fe1a3165f7afdbcdd976d81949ca59638835f) Thanks [@Mnwa](https://github.com/Mnwa)! - Refactor compression. Split code into modules
+
+- [`4a0fe1a`](https://github.com/Medico-Mind/rolldown-compression/commit/4a0fe1a3165f7afdbcdd976d81949ca59638835f) Thanks [@Mnwa](https://github.com/Mnwa)! - Reduce brotli memory usage for small files
+
 ## 2.3.2
 
 ### Patch Changes
