@@ -157,7 +157,7 @@ mod tests {
             Algorithm::Brotli => {
                 let mut out = Vec::new();
                 let mut reader = input;
-                brotli::BrotliDecompress(&mut reader, &mut out).expect("brotli decode");
+                simd_brotli::BrotliDecompress(&mut reader, &mut out).expect("brotli decode");
                 out
             }
             Algorithm::Zstd => zstd::stream::decode_all(input).expect("zstd decode"),

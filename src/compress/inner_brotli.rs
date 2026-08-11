@@ -6,9 +6,11 @@ mod pool;
 mod shared_input;
 
 use super::InputBuffer;
-use brotli::enc::threading::{CompressMulti, Owned, SendAlloc};
-use brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
-use brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher};
+use simd_brotli::enc::threading::{CompressMulti, Owned, SendAlloc};
+use simd_brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
+use simd_brotli::enc::{
+    BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher,
+};
 use std::ops::RangeInclusive;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -137,7 +139,7 @@ fn compress_single(
     let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
     let mut reader = input;
     let (input_buf, output_buf) = buffer.split();
-    brotli::BrotliCompressCustomAlloc(
+    simd_brotli::BrotliCompressCustomAlloc(
         &mut reader,
         &mut output,
         input_buf,
