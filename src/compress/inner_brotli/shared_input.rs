@@ -1,5 +1,5 @@
 use crate::compress::InputBuffer;
-use brotli::SliceWrapper;
+use simd_brotli::SliceWrapper;
 
 /// Owned input for [`CompressMulti`], which shares the buffer across section
 /// tasks and therefore cannot borrow it. Newtype because the orphan rule

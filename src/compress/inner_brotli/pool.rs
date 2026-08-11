@@ -1,8 +1,8 @@
-use brotli::Allocator;
-use brotli::enc::threading::{
+use simd_brotli::Allocator;
+use simd_brotli::enc::threading::{
     InternalOwned, InternalSendAlloc, Joinable, OwnedRetriever, PoisonedThreadError,
 };
-use brotli::enc::{BatchSpawnableLite, BrotliAlloc, BrotliEncoderThreadError, Owned, SendAlloc};
+use simd_brotli::enc::{BatchSpawnableLite, BrotliAlloc, BrotliEncoderThreadError, Owned, SendAlloc};
 use rayon::Yield;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
