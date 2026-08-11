@@ -8,7 +8,9 @@ mod shared_input;
 use super::InputBuffer;
 use simd_brotli::enc::threading::{CompressMulti, Owned, SendAlloc};
 use simd_brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
-use simd_brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher};
+use simd_brotli::enc::{
+    BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher,
+};
 use std::ops::RangeInclusive;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
