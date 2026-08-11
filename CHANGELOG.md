@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.3.4
+
+### Patch Changes
+
+- [#33](https://github.com/Medico-Mind/rolldown-compression/pull/33) [`80cc193`](https://github.com/Medico-Mind/rolldown-compression/commit/80cc193a03466fd6057090dcf5c4f84e464b193a) Thanks [@Mnwa](https://github.com/Mnwa)! - Migrate to simd brotli
+
 ## 2.3.3
 
 ### Patch Changes
