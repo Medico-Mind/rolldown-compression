@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 2.3.5
+
+### Patch Changes
+
+- [`6baafca`](https://github.com/Medico-Mind/rolldown-compression/commit/6baafca502c6fcdefc3895a1424b1f7ebc1a4da0) Thanks [@Mnwa](https://github.com/Mnwa)! - bump simd brotli version
+
+- [`d3276cf`](https://github.com/Medico-Mind/rolldown-compression/commit/d3276cf20ee0202881a7709b5be28589398bc52d) Thanks [@Mnwa](https://github.com/Mnwa)! - Compress brotli big files in a scope
+
 ## 2.3.4
 
 ### Patch Changes
