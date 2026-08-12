@@ -3,14 +3,11 @@
 
 mod buf;
 mod pool;
-mod shared_input;
 
 use super::InputBuffer;
-use simd_brotli::enc::threading::{CompressMulti, Owned, SendAlloc};
+use simd_brotli::enc::threading::CompressMultiScoped;
 use simd_brotli::enc::{BrotliEncoderMaxCompressedSize, BrotliEncoderParams};
-use simd_brotli::enc::{
-    BrotliEncoderMaxCompressedSizeMulti, SliceWrapper, StandardAlloc, UnionHasher,
-};
+use simd_brotli::enc::{BrotliEncoderMaxCompressedSizeMulti, StandardAlloc};
 use std::ops::RangeInclusive;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -123,7 +120,7 @@ fn compress_sectioned(
         // `clamp` would otherwise panic on an inverted range.
         let max_sections = rayon::current_num_threads().max(BROTLI_MIN_SECTIONS);
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, max_sections);
-        compress_multi(&params, num_sections, shared_input::SharedInput(input))
+        compress_multi(&params, num_sections, input.as_ref())
     } else {
         buf::BROTLI_BUFFER
             .with_borrow_mut(|buffer| compress_single(&params, input.as_ref(), buffer))
@@ -155,22 +152,22 @@ fn compress_single(
 fn compress_multi(
     params: &BrotliEncoderParams,
     num_sections: usize,
-    input: shared_input::SharedInput,
+    input: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let input_len = input.slice().len();
+    let input_len = input.len();
     let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input_len, num_sections)];
     let mut alloc_per_section: Vec<_> = (0..num_sections)
-        .map(|_| SendAlloc::new(StandardAlloc::default(), UnionHasher::Uninit))
+        .map(|_| Some(StandardAlloc::default()))
         .collect();
     // The last section is compressed inline by `CompressMulti`, so a panic
     // there unwinds through here rather than through a spawned task.
     let written = catch_unwind(AssertUnwindSafe(|| {
-        CompressMulti(
+        CompressMultiScoped(
             params,
-            &mut Owned::new(input),
+            input,
             &mut output,
             &mut alloc_per_section,
-            &mut pool::RayonBrotliWorkerPool,
+            &pool::RayonThreadScope,
         )
     }))
     .map_err(|_| "brotli compression failed: panic handled".to_string())?
@@ -225,12 +222,7 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let compressed = compress_multi(
-            &params,
-            num_sections,
-            shared_input::SharedInput(input.clone()),
-        )
-        .expect("compress");
+        let compressed = compress_multi(&params, num_sections, input.as_ref()).expect("compress");
         assert!(compressed.len() < input.len());
         assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
