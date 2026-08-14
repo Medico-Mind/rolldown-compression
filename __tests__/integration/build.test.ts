@@ -2,9 +2,8 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { brotliDecompressSync, gunzipSync } from 'node:zlib'
+import { brotliDecompressSync, gunzipSync, zstdDecompressSync } from 'node:zlib'
 
-import { decompress as zstdDecompress } from 'fzstd'
 import { type Plugin, rolldown } from 'rolldown'
 import { afterAll, describe, expect, it } from 'vitest'
 
@@ -102,8 +101,8 @@ describe('rolldown integration', () => {
     expect(files).toContain('main.js.zst')
 
     const original = await readFile(path.join(outDir, 'main.js'))
-    const fromZstd = Buffer.from(
-      zstdDecompress(new Uint8Array(await readFile(path.join(outDir, 'main.js.zst')))),
+    const fromZstd = zstdDecompressSync(
+      new Uint8Array(await readFile(path.join(outDir, 'main.js.zst'))),
     )
     expect(fromZstd.equals(original)).toBe(true)
   })
