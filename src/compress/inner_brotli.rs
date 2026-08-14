@@ -164,8 +164,7 @@ fn compress_multi(
 ) -> Result<Vec<u8>, String> {
     let input_len = input.len();
     let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input_len, num_sections)];
-    let mut alloc_per_section: Vec<_> =
-        (0..num_sections).map(|_| Some(allocator.clone())).collect();
+    let mut alloc_per_section: Vec<_> = vec![Some(allocator); num_sections];
     // The last section is compressed inline by `CompressMulti`, so a panic
     // there unwinds through here rather than through a spawned task.
     let written = catch_unwind(AssertUnwindSafe(|| {
