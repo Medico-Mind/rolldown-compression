@@ -1,6 +1,6 @@
 use simd_brotli::enc::{Allocator, BrotliAlloc, SliceWrapper, SliceWrapperMut};
-use std::any::Any;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use anymap3::CloneAny;
 
 static BROTLI_ALLOCATOR: LazyLock<CachingAlloc> = LazyLock::new(CachingAlloc::default);
 
@@ -22,7 +22,7 @@ pub struct CachingAlloc {
 
 #[derive(Default)]
 struct ObjectCache {
-    by_type: anymap3::Map<dyn Any + Send>,
+    by_type: anymap3::Map<dyn CloneAny + Send>,
 }
 
 pub struct CachedMemory<T>(Vec<T>);
@@ -55,7 +55,7 @@ impl CachingAlloc {
 }
 
 impl ObjectCache {
-    fn objects<T: Send + 'static>(&mut self) -> &mut Vec<Vec<T>> {
+    fn objects<T: Clone + Send + 'static>(&mut self) -> &mut Vec<Vec<T>> {
         self.by_type.entry().or_default()
     }
 }
