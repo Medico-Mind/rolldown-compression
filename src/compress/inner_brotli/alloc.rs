@@ -1,6 +1,5 @@
 use simd_brotli::enc::{Allocator, BrotliAlloc, SliceWrapper, SliceWrapperMut};
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::any::Any;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 static BROTLI_ALLOCATOR: LazyLock<CachingAlloc> = LazyLock::new(CachingAlloc::default);
@@ -23,7 +22,7 @@ pub struct CachingAlloc {
 
 #[derive(Default)]
 struct ObjectCache {
-    by_type: HashMap<TypeId, Box<dyn Any + Send>>,
+    by_type: anymap3::Map<dyn Any + Send>,
 }
 
 pub struct CachedMemory<T>(Vec<T>);
@@ -57,11 +56,7 @@ impl CachingAlloc {
 
 impl ObjectCache {
     fn objects<T: Send + 'static>(&mut self) -> &mut Vec<Vec<T>> {
-        self.by_type
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(Vec::<Vec<T>>::new()))
-            .downcast_mut()
-            .expect("cached Brotli bucket has the registered type")
+        self.by_type.entry().or_default()
     }
 }
 
@@ -150,12 +145,7 @@ mod tests {
         <CachingAlloc as Allocator<u8>>::free_cell(&mut alloc, large);
 
         let cache = alloc.cache();
-        let objects = cache
-            .by_type
-            .get(&TypeId::of::<u8>())
-            .unwrap()
-            .downcast_ref::<Vec<Vec<u8>>>()
-            .unwrap();
+        let objects = cache.by_type.get::<Vec<Vec<u8>>>().unwrap();
         assert_eq!(objects.len(), 1);
         assert!(objects[0].capacity() >= 128);
     }
