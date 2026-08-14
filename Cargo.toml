@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-simd-brotli = { version = "9" }
+simd-brotli = { version = "9", git = "https://github.com/Mnwa/rust-brotli.git", branch = "optimize-simd" }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 hotpath = "0.23"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
@@ -18,8 +18,8 @@ rayon = "1.12"
 zstd = { version = "0.13", default-features = false }
 
 [features]
-hotpath = ["hotpath/hotpath"]
-hotpath-alloc = ["hotpath/hotpath-alloc"]
+hotpath = ["hotpath/hotpath", "simd-brotli/hotpath", "simd-brotli/hotpath-cpu"]
+hotpath-alloc = ["hotpath/hotpath-alloc", "simd-brotli/hotpath-alloc"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = "0.1"
