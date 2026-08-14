@@ -1,6 +1,6 @@
+use anymap3::CloneAny;
 use simd_brotli::enc::{Allocator, BrotliAlloc, SliceWrapper, SliceWrapperMut};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
-use anymap3::CloneAny;
 
 static BROTLI_ALLOCATOR: LazyLock<CachingAlloc> = LazyLock::new(CachingAlloc::default);
 
