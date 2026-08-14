@@ -82,7 +82,7 @@ where
             let index = objects
                 .iter()
                 .enumerate()
-                .filter(|(_, object)| object.capacity() >= len)
+                .filter(|(_, object)| object.capacity() >= len && len < object.capacity() * 2)
                 .min_by_key(|(_, object)| object.capacity())
                 .map(|(index, _)| index);
             index.map(|index| objects.swap_remove(index))
@@ -90,7 +90,7 @@ where
 
         let mut data = cached.unwrap_or_else(|| Vec::with_capacity(len));
         data.clear();
-        data.resize(len, T::default());
+        data.resize_with(len, T::default);
         CachedMemory(data)
     }
 
