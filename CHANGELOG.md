@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.3.6
+
+### Patch Changes
+
+- [#36](https://github.com/Medico-Mind/rolldown-compression/pull/36) [`0b67e41`](https://github.com/Medico-Mind/rolldown-compression/commit/0b67e41be90e4ae8adfe9c6232e5b1be7ef29cc2) Thanks [@Mnwa](https://github.com/Mnwa)! - Reuse Brotli encoder allocations through a process-wide cache to reduce allocation count and volume across concurrent compression jobs.
+
 ## 2.3.5
 
 ### Patch Changes
