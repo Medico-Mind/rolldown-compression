@@ -839,9 +839,8 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "simd-brotli"
-version = "9.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b018e814e1d6305b8e0e5b273dc55d3192209d0b3514fcddefa15bed9261392b"
+version = "9.1.1"
+source = "git+https://github.com/Mnwa/rust-brotli.git?branch=features%2Foptimize-simd#d9a3290204f573a976983bb4784df5f700ae3f7f"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
