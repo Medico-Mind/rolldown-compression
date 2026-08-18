@@ -1,5 +1,27 @@
 # @medicomind/rolldown-compression
 
+## 2.4.0
+
+### Minor Changes
+
+- [`7731f9d`](https://github.com/Medico-Mind/rolldown-compression/commit/7731f9d48a0f98ec4b8f1e75f30729bceb8be5bf) Thanks [@Mnwa](https://github.com/Mnwa)! - Follow the Rolldown plugin conventions and harden asset handling.
+  
+  - The plugin is now named `rolldown-plugin-compression` (was `rolldown-compression`), as the [plugin conventions](https://rolldown.rs/apis/plugin-api#conventions) ask for. It also reports `version` and `meta.packageName`, and exposes an `api` (`algorithms`, `extensions`, `emittedFileNames()`) for inter-plugin communication.
+  - `deleteOriginalAssets` no longer removes an asset that ended up without a compressed variant — a file skipped by `skipIfLargerOrEqual` used to be deleted with nothing to replace it. Removing a chunk now logs a warning once, since only the compressed name is left on disk.
+  - Artifact names resolved from `filename` are validated: names that escape the output directory, are absolute, collide with another artifact of the same build, or would overwrite a file the build already owns now fail the build instead of silently clobbering.
+  - In stream mode `deleteOriginalAssets` now only unlinks files the build actually wrote — those the bundle declares, or those written while the output was being generated. A leftover from an earlier build in an output directory that was not emptied still gets compressed, but is no longer deleted.
+  - Per-output state is reset in `renderStart`, so with multiple outputs one output's artifacts no longer shadow another output's sources, and watch-mode rebuilds no longer accumulate it.
+  - Per-file detail (`skipped …`) moved from `this.info` to `this.debug`; the build summary stays on `this.info`.
+  - Assets no longer cross into the native module through a duplicated `Buffer`, and stream mode reads each batch's files concurrently instead of one at a time.
+
+### Patch Changes
+
+- [`0b10197`](https://github.com/Medico-Mind/rolldown-compression/commit/0b10197902c3278d9ba9dfe3dec7891fc8ff110f) Thanks [@Mnwa](https://github.com/Mnwa)! - Update simd-brotli to v10, speeding up brotli compression. On a 36 MB production-shaped bundle corpus (62 files): quality 11 is ~5% faster (7518ms -> 7143ms) and quality 6 ~3% faster (111ms -> 108ms), with byte-identical output.
+
+- [`97b67df`](https://github.com/Medico-Mind/rolldown-compression/commit/97b67df90db45e7b93605594616abe9b47773939) Thanks [@Mnwa](https://github.com/Mnwa)! - Remove the `@rollup/pluginutils` runtime dependency and use Node.js `path.matchesGlob` for include and exclude glob matching.
+
+- [`97571e9`](https://github.com/Medico-Mind/rolldown-compression/commit/97571e990720f135b3fa8c809bca9af831d18419) Thanks [@Mnwa](https://github.com/Mnwa)! - Route plugin messages through Rolldown's logging context instead of writing directly to the console.
+
 ## 2.3.6
 
 ### Patch Changes
