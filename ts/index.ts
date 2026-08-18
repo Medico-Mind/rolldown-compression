@@ -4,10 +4,8 @@
  * Rolldown plugin that compresses emitted assets with gzip, brotli and zstd
  * using a native Rust core (napi-rs + rayon).
  */
-import type { Plugin } from 'rolldown'
-
 import { type CompressionOptions, resolveOptions } from './options.js'
-import { createCompressionPlugin } from './plugin.js'
+import { type CompressionPlugin, createCompressionPlugin } from './plugin.js'
 
 export type {
   AlgorithmName,
@@ -21,6 +19,7 @@ export type {
   ZstdOptions,
 } from './options.js'
 export { defineAlgorithm } from './options.js'
+export type { CompressionPlugin, CompressionPluginApi } from './plugin.js'
 
 /**
  * Create the compression plugin.
@@ -41,6 +40,6 @@ export { defineAlgorithm } from './options.js'
  *   ],
  * })
  */
-export function compression(options?: CompressionOptions): Plugin {
+export function compression(options?: CompressionOptions): CompressionPlugin {
   return createCompressionPlugin(resolveOptions(options))
 }

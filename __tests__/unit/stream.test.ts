@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -42,25 +42,39 @@ async function makeOutDir(files: Record<string, string | Uint8Array>): Promise<s
   return dir
 }
 
+type StreamBundle = Record<string, { type: 'chunk' | 'asset' }>
+
 function runWriteBundle(
   plugin: ReturnType<typeof createCompressionPlugin>,
   dir: string,
-  { watchMode = false } = {},
+  { watchMode = false, bundle = {} as StreamBundle } = {},
 ) {
   const context = {
     meta: { watchMode },
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error(error: Error): never {
       throw error
     },
   }
+  // Rolldown opens every output with `renderStart`; stream mode uses it to
+  // bound which files on disk belong to the output being written.
+  ;(plugin.renderStart as unknown as (this: typeof context) => void).call(context)
   const hook = plugin.writeBundle as unknown as {
     order: string
-    handler: (this: typeof context, outputOptions: object) => Promise<void>
+    handler: (this: typeof context, outputOptions: object, bundle: StreamBundle) => Promise<void>
   }
   expect(hook.order).toBe('post')
-  return hook.handler.call(context, { dir })
+  return Object.assign(hook.handler.call(context, { dir }, bundle), {
+    context,
+  })
+}
+
+/** Backdate a file so it looks like a leftover from an earlier build. */
+async function ageFile(dir: string, name: string): Promise<void> {
+  const stale = new Date(Date.now() - 60 * 60 * 1000)
+  await utimes(path.join(dir, name), stale, stale)
 }
 
 async function listFiles(dir: string): Promise<string[]> {
@@ -184,6 +198,97 @@ describe('stream mode', () => {
     await runWriteBundle(plugin, dir)
 
     expect(await listFiles(dir)).toEqual(['keep.png', 'main.js.gz'])
+  })
+
+  it('compresses everything in the output directory, leftovers included', async () => {
+    const plugin = createCompressionPlugin(
+      resolveOptions({ stream: true, algorithms: ['gzip'], logLevel: 'silent' }),
+    )
+    const dir = await makeOutDir({
+      'fresh.js': 'export const fresh = 1;\n'.repeat(100),
+      'stale.js': 'export const stale = 1;\n'.repeat(100),
+    })
+    await ageFile(dir, 'stale.js')
+    await runWriteBundle(plugin, dir)
+
+    const files = await listFiles(dir)
+    expect(files).toContain('fresh.js.gz')
+    expect(files).toContain('stale.js.gz')
+  })
+
+  it('deletes only the originals this build wrote', async () => {
+    const plugin = createCompressionPlugin(
+      resolveOptions({
+        stream: true,
+        deleteOriginalAssets: true,
+        algorithms: ['gzip'],
+      }),
+    )
+    const dir = await makeOutDir({
+      'main.js': 'export default 1;\n'.repeat(100),
+      'declared.js': 'export default 2;\n'.repeat(100),
+      'previous.js': 'export default 0;\n'.repeat(100),
+    })
+    // Both are old, but the bundle claims `declared.js`; `previous.js` is a
+    // leftover in an output directory that was not emptied.
+    await ageFile(dir, 'declared.js')
+    await ageFile(dir, 'previous.js')
+    const run = runWriteBundle(plugin, dir, { bundle: { 'declared.js': { type: 'chunk' } } })
+    await run
+
+    expect(await listFiles(dir)).toEqual([
+      'declared.js.gz',
+      'main.js.gz',
+      'previous.js',
+      'previous.js.gz',
+    ])
+    expect(run.context.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/kept "previous\.js".*files this build wrote/),
+    )
+  })
+
+  it('keeps originals that ended up without a compressed variant', async () => {
+    const plugin = createCompressionPlugin(
+      resolveOptions({
+        stream: true,
+        include: /\.bin$/,
+        deleteOriginalAssets: true,
+        algorithms: ['gzip'],
+      }),
+    )
+    const incompressible = new Uint8Array(2048)
+    let state = 0x9e3779b9
+    for (let i = 0; i < incompressible.length; i++) {
+      state ^= state << 13
+      state ^= state >>> 17
+      state ^= state << 5
+      incompressible[i] = state & 0xff
+    }
+    const dir = await makeOutDir({ 'noise.bin': incompressible })
+    const run = runWriteBundle(plugin, dir)
+    await run
+
+    expect(await listFiles(dir)).toEqual(['noise.bin'])
+    expect(run.context.warn).toHaveBeenCalledWith(expect.stringMatching(/kept "noise\.bin"/))
+  })
+
+  it('refuses to write an artifact over a file it is compressing', async () => {
+    const plugin = createCompressionPlugin(
+      resolveOptions({
+        stream: true,
+        include: /\.js$/,
+        filename: () => 'b.js',
+        algorithms: ['gzip'],
+        logLevel: 'silent',
+      }),
+    )
+    const dir = await makeOutDir({
+      'a.js': 'export const a = 1;\n'.repeat(100),
+      'b.js': 'export const b = 2;\n'.repeat(100),
+    })
+    await expect(runWriteBundle(plugin, dir)).rejects.toThrow(
+      /"b\.js".*would overwrite a file this build already owns/,
+    )
   })
 
   it('is a no-op in watch mode by default', async () => {

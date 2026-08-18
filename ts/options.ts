@@ -58,8 +58,14 @@ export type LogLevel = 'silent' | 'error' | 'warn' | 'info'
 /** Options accepted by {@link compression}. */
 export interface CompressionOptions {
   /**
-   * Files to compress. Strings are Node.js glob patterns, RegExps are tested
-   * against the output file name.
+   * Files to compress, matched against the output file name relative to the
+   * output directory (always with `/` separators, never a leading `./`).
+   * RegExps are tested against that name; strings are globs matched with
+   * Node's `path.matchesGlob`, so they follow that dialect (`*` does not
+   * cross `/`, `**` does).
+   *
+   * Note that source maps (`*.map`) are not covered by the default pattern;
+   * add `/\.map$/` to `include` if you serve them pre-compressed.
    * @default /\.(html|xml|css|json|js|mjs|svg|yaml|yml|toml|txt|wasm)$/
    */
   include?: string | RegExp | Array<string | RegExp>
@@ -78,14 +84,28 @@ export interface CompressionOptions {
   /**
    * Name of the emitted artifact. Tokens: `[path]` (directory, with trailing
    * slash), `[base]` (file name with extension), `[name]`, `[ext]` (with
-   * leading dot), `[hash]` (8-char content hash). Function form receives the
-   * original file name and the canonical algorithm name.
+   * leading dot), `[hash]` (8-char hash of the *original*, uncompressed
+   * bytes). Function form receives the original file name and the canonical
+   * algorithm name.
+   *
+   * Whichever form is used, the result must be a relative path inside the
+   * output directory and must differ from the source name and from every
+   * other artifact of the same build; anything else aborts the build.
    * @default '[path][base]' + per-algorithm extension (.gz / .br / .zst)
    */
   filename?: FilenameOption
   /**
-   * Remove the original asset from the bundle once all algorithms have
-   * processed it.
+   * Remove the original asset once every algorithm has produced a variant of
+   * it. Files for which no variant was emitted — because `skipIfLargerOrEqual`
+   * skipped them, for instance — are always kept, so this can never leave a
+   * build without a servable copy of an asset. In `stream` mode it only ever
+   * unlinks files this build wrote, never leftovers it merely found in the
+   * output directory.
+   *
+   * Deleting chunks (JS/CSS) only works if whatever serves the build resolves
+   * the original request path to the compressed variant; dynamic imports and
+   * source map links still point at the original name. The plugin logs a
+   * warning the first time it removes a chunk.
    * @default false
    */
   deleteOriginalAssets?: boolean
@@ -119,7 +139,13 @@ export interface CompressionOptions {
    * @default false
    */
   stream?: boolean
-  /** @default 'info' */
+  /**
+   * `'info'` logs the per-build summary through `this.info` and per-file
+   * detail through `this.debug` (the bundler's own log level decides whether
+   * debug output is shown); `'warn'` keeps only warnings; `'error'` and
+   * `'silent'` leave build-aborting errors as the only output.
+   * @default 'info'
+   */
   logLevel?: LogLevel
   /**
    * The plugin is a no-op in watch/dev mode unless this is set to `true`.
@@ -395,10 +421,63 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
   }
 }
 
+/** Outcome of {@link checkArtifactName}. */
+export type ArtifactNameCheck =
+  | { readonly ok: true; readonly fileName: string }
+  | { readonly ok: false; readonly message: string }
+
+/**
+ * Validate a resolved artifact name before anything is emitted or written.
+ *
+ * A `filename` function is arbitrary user code, so its result is checked the
+ * same way a path from outside would be: it has to stay inside the output
+ * directory and must not claim the name of the asset it was derived from.
+ * Returns the normalized name to use, or the reason it was rejected.
+ */
+export function checkArtifactName(
+  outputFileName: unknown,
+  sourceFileName: string,
+  algorithm: CanonicalAlgorithm,
+): ArtifactNameCheck {
+  const context = `the filename option resolved "${sourceFileName}" (${algorithm})`
+
+  if (typeof outputFileName !== 'string' || outputFileName.length === 0) {
+    return {
+      ok: false,
+      message: `${context} to ${JSON.stringify(outputFileName)}; expected a non-empty file name relative to the output directory`,
+    }
+  }
+  if (outputFileName.includes('\0')) {
+    return { ok: false, message: `${context} to a name containing a NUL byte` }
+  }
+
+  const normalized = path.posix.normalize(outputFileName.replaceAll('\\', '/'))
+  if (path.posix.isAbsolute(normalized) || /^[a-zA-Z]:/.test(normalized)) {
+    return {
+      ok: false,
+      message: `${context} to the absolute path "${outputFileName}"; expected a path relative to the output directory`,
+    }
+  }
+  if (normalized === '..' || normalized.startsWith('../') || normalized.endsWith('/')) {
+    return {
+      ok: false,
+      message: `${context} to "${outputFileName}", which does not name a file inside the output directory`,
+    }
+  }
+  if (normalized === sourceFileName) {
+    return {
+      ok: false,
+      message: `${context} to the same name as the source asset; refusing to overwrite it`,
+    }
+  }
+  return { ok: true, fileName: normalized }
+}
+
 /**
  * Resolve the emitted file name for a compressed artifact.
  *
- * Supported tokens: `[path]`, `[base]`, `[name]`, `[ext]`, `[hash]`.
+ * Supported tokens: `[path]`, `[base]`, `[name]`, `[ext]`, `[hash]`. The
+ * result is not validated here — see {@link checkArtifactName}.
  */
 export function resolveOutputFileName(
   filename: FilenameOption | undefined,

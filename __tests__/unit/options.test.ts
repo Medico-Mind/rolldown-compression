@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { compression, defineAlgorithm } from '../../ts/index.js'
 import {
+  checkArtifactName,
   DEFAULT_INCLUDE,
   normalizeAlgorithmName,
   resolveOptions,
@@ -186,4 +187,46 @@ describe('resolveOutputFileName', () => {
   function expectedHash(): string {
     return createHash('sha256').update(source).digest('hex').slice(0, 8)
   }
+})
+
+describe('checkArtifactName', () => {
+  const ok = (name: string, source = 'assets/app.js') => checkArtifactName(name, source, 'gzip')
+
+  it('accepts and normalizes a relative name', () => {
+    expect(ok('assets/app.js.gz')).toEqual({ ok: true, fileName: 'assets/app.js.gz' })
+    expect(ok('assets/./app.js.gz')).toEqual({ ok: true, fileName: 'assets/app.js.gz' })
+    expect(ok('assets\\app.js.gz')).toEqual({ ok: true, fileName: 'assets/app.js.gz' })
+  })
+
+  it('rejects names that escape the output directory', () => {
+    expect(ok('../app.js.gz')).toMatchObject({ ok: false })
+    expect(ok('assets/../../app.js.gz')).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('does not name a file inside the output directory'),
+    })
+  })
+
+  it('rejects absolute paths, including Windows drive letters', () => {
+    expect(ok('/tmp/app.js.gz')).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('absolute path'),
+    })
+    expect(ok('C:/tmp/app.js.gz')).toMatchObject({ ok: false })
+  })
+
+  it('rejects empty, non-string and NUL-bearing names', () => {
+    expect(ok('')).toMatchObject({ ok: false })
+    expect(checkArtifactName(undefined, 'a.js', 'gzip')).toMatchObject({ ok: false })
+    expect(ok('app\0.js.gz')).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('NUL byte'),
+    })
+  })
+
+  it('refuses to overwrite the source asset', () => {
+    expect(ok('assets/app.js')).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('same name as the source asset'),
+    })
+  })
 })
