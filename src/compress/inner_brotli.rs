@@ -121,12 +121,7 @@ fn compress_sectioned(
         // `clamp` would otherwise panic on an inverted range.
         let max_sections = rayon::current_num_threads().max(BROTLI_MIN_SECTIONS);
         let num_sections = (input_len / section_size).clamp(BROTLI_MIN_SECTIONS, max_sections);
-        compress_multi(
-            &params,
-            num_sections,
-            input.as_ref(),
-            alloc::brotli_allocator(),
-        )
+        compress_multi(&params, num_sections, input.as_ref())
     } else {
         buf::BROTLI_BUFFER
             .with_borrow_mut(|buffer| compress_single(&params, input.as_ref(), buffer))
@@ -141,7 +136,6 @@ fn compress_single(
 ) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(BrotliEncoderMaxCompressedSize(input.len()));
     let mut reader = input;
-    let allocator = alloc::brotli_allocator();
     let (input_buf, output_buf) = buffer.split();
     simd_brotli::BrotliCompressCustomAlloc(
         &mut reader,
@@ -149,7 +143,7 @@ fn compress_single(
         input_buf,
         output_buf,
         params,
-        allocator,
+        alloc::DefaultAlloc,
     )
     .map_err(|err| format!("brotli compression failed: {err}"))?;
     Ok(output)
@@ -160,11 +154,10 @@ fn compress_multi(
     params: &BrotliEncoderParams,
     num_sections: usize,
     input: &[u8],
-    allocator: alloc::CachingAlloc,
 ) -> Result<Vec<u8>, String> {
     let input_len = input.len();
     let mut output = vec![0u8; BrotliEncoderMaxCompressedSizeMulti(input_len, num_sections)];
-    let mut alloc_per_section: Vec<_> = vec![Some(allocator); num_sections];
+    let mut alloc_per_section: Vec<_> = vec![Some(alloc::DefaultAlloc); num_sections];
     // The last section is compressed inline by `CompressMulti`, so a panic
     // there unwinds through here rather than through a spawned task.
     let written = catch_unwind(AssertUnwindSafe(|| {
@@ -228,13 +221,7 @@ mod tests {
             size_hint: input.len(),
             ..Default::default()
         };
-        let compressed = compress_multi(
-            &params,
-            num_sections,
-            input.as_ref(),
-            alloc::CachingAlloc::default(),
-        )
-        .expect("compress");
+        let compressed = compress_multi(&params, num_sections, input.as_ref()).expect("compress");
         assert!(compressed.len() < input.len());
         assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
     }
