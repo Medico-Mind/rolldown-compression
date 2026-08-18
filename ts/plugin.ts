@@ -23,41 +23,12 @@ import path from 'node:path'
 import type { Plugin } from 'rolldown'
 
 import { type CompressTask, compressBuffers } from './binding.js'
-import {
-  COMPRESSED_EXTENSION_RE,
-  type LogLevel,
-  type ResolvedOptions,
-  resolveOutputFileName,
-} from './options.js'
+import { COMPRESSED_EXTENSION_RE, type ResolvedOptions, resolveOutputFileName } from './options.js'
 
 const PLUGIN_NAME = 'rolldown-compression'
 
 /** Source bytes per batch in stream mode when `chunkSize` is 0. */
 const STREAM_DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
-
-interface Logger {
-  info: (message: string) => void
-  warn: (message: string) => void
-  error: (message: string) => void
-}
-
-const LOG_PRIORITY: Record<LogLevel, number> = { silent: 0, error: 1, warn: 2, info: 3 }
-
-export function createLogger(level: LogLevel): Logger {
-  const priority = LOG_PRIORITY[level]
-  const prefix = `[${PLUGIN_NAME}]`
-  return {
-    info: (message) => {
-      if (priority >= LOG_PRIORITY.info) console.info(`${prefix} ${message}`)
-    },
-    warn: (message) => {
-      if (priority >= LOG_PRIORITY.warn) console.warn(`${prefix} ${message}`)
-    },
-    error: (message) => {
-      if (priority >= LOG_PRIORITY.error) console.error(`${prefix} ${message}`)
-    },
-  }
-}
 
 function toBuffer(source: string | Uint8Array): Buffer {
   return typeof source === 'string' ? Buffer.from(source, 'utf8') : Buffer.from(source)
@@ -98,7 +69,7 @@ interface BatchRunner {
  */
 function createBatchRunner(
   options: ResolvedOptions,
-  logger: Logger,
+  info: ((message: string) => void) | undefined,
   emittedNames: Set<string>,
   emit: (artifact: PendingArtifact, data: Buffer) => void | Promise<void>,
   fail: (message: string) => never,
@@ -140,7 +111,7 @@ function createBatchRunner(
         continue
       }
       if (result.skipped) {
-        logger.info(
+        info?.(
           `skipped ${artifact.outputFileName}: ${result.algorithm} output would not be smaller than the original`,
         )
         continue
@@ -197,20 +168,20 @@ function createBatchRunner(
   return { addFile, flush, processedSources, emittedBySource, failures, stats }
 }
 
-function logSummary(logger: Logger, stats: Map<string, AlgorithmStats>, startedAt: number): void {
+function formatSummary(stats: Map<string, AlgorithmStats>, startedAt: number): string | undefined {
   const summary = [...stats.entries()]
     .map(
       ([algorithm, stat]) =>
         `${algorithm}: ${stat.count} file(s), ${formatBytes(stat.originalBytes)} -> ${formatBytes(stat.outputBytes)}`,
     )
     .join('; ')
-  if (summary.length === 0) return
+  if (summary.length === 0) return undefined
   const totalSaved = [...stats.values()].reduce(
     (sum, stat) => sum + (stat.originalBytes - stat.outputBytes),
     0,
   )
   const elapsedMs = performance.now() - startedAt
-  logger.info(`${summary}; saved ${formatBytes(totalSaved)} in ${(elapsedMs / 1000).toFixed(2)}s`)
+  return `${summary}; saved ${formatBytes(totalSaved)} in ${(elapsedMs / 1000).toFixed(2)}s`
 }
 
 /** Recursively list every file under `root`, in a deterministic order. */
@@ -233,7 +204,6 @@ async function walkFiles(root: string): Promise<string[]> {
 }
 
 export function createCompressionPlugin(options: ResolvedOptions): Plugin {
-  const logger = createLogger(options.logLevel)
   // Names emitted by this plugin instance, so a second pass (or a second
   // output) never re-compresses our own artifacts.
   const emittedNames = new Set<string>()
@@ -247,7 +217,9 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
       if (options.stream) return
 
       if (this.meta?.watchMode && !options.enableInWatchMode) {
-        logger.info('watch mode detected, skipping compression (set enableInWatchMode to opt in)')
+        if (options.logLevel === 'info') {
+          this.info('watch mode detected, skipping compression (set enableInWatchMode to opt in)')
+        }
         return
       }
 
@@ -255,7 +227,7 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
       const fail = (message: string): never => this.error(new Error(`[${PLUGIN_NAME}] ${message}`))
       const runner = createBatchRunner(
         options,
-        logger,
+        options.logLevel === 'info' ? (message) => this.info(message) : undefined,
         emittedNames,
         (artifact, data) => {
           this.emitFile({
@@ -290,15 +262,20 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
       if (options.deleteOriginalAssets) {
         for (const fileName of runner.processedSources) {
           if ((runner.emittedBySource.get(fileName) ?? 0) === 0) {
-            logger.warn(
-              `deleteOriginalAssets removed "${fileName}" even though no compressed variant was emitted for it`,
-            )
+            if (options.logLevel === 'warn' || options.logLevel === 'info') {
+              this.warn(
+                `deleteOriginalAssets removed "${fileName}" even though no compressed variant was emitted for it`,
+              )
+            }
           }
           delete bundle[fileName]
         }
       }
 
-      logSummary(logger, runner.stats, startedAt)
+      if (options.logLevel === 'info') {
+        const summary = formatSummary(runner.stats, startedAt)
+        if (summary !== undefined) this.info(summary)
+      }
     },
 
     writeBundle: {
@@ -309,7 +286,9 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
         if (!options.stream) return
 
         if (this.meta?.watchMode && !options.enableInWatchMode) {
-          logger.info('watch mode detected, skipping compression (set enableInWatchMode to opt in)')
+          if (options.logLevel === 'info') {
+            this.info('watch mode detected, skipping compression (set enableInWatchMode to opt in)')
+          }
           return
         }
 
@@ -320,7 +299,9 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
               ? path.resolve(path.dirname(outputOptions.file))
               : undefined
         if (outDir === undefined) {
-          logger.warn('stream mode could not determine the output directory, skipping compression')
+          if (options.logLevel === 'warn' || options.logLevel === 'info') {
+            this.warn('stream mode could not determine the output directory, skipping compression')
+          }
           return
         }
 
@@ -329,7 +310,7 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
           this.error(new Error(`[${PLUGIN_NAME}] ${message}`))
         const runner = createBatchRunner(
           options,
-          logger,
+          options.logLevel === 'info' ? (message) => this.info(message) : undefined,
           emittedNames,
           async (artifact, data) => {
             const target = path.join(outDir, artifact.outputFileName)
@@ -365,15 +346,20 @@ export function createCompressionPlugin(options: ResolvedOptions): Plugin {
         if (options.deleteOriginalAssets) {
           for (const fileName of runner.processedSources) {
             if ((runner.emittedBySource.get(fileName) ?? 0) === 0) {
-              logger.warn(
-                `deleteOriginalAssets removed "${fileName}" even though no compressed variant was emitted for it`,
-              )
+              if (options.logLevel === 'warn' || options.logLevel === 'info') {
+                this.warn(
+                  `deleteOriginalAssets removed "${fileName}" even though no compressed variant was emitted for it`,
+                )
+              }
             }
             await unlink(path.join(outDir, fileName))
           }
         }
 
-        logSummary(logger, runner.stats, startedAt)
+        if (options.logLevel === 'info') {
+          const summary = formatSummary(runner.stats, startedAt)
+          if (summary !== undefined) this.info(summary)
+        }
       },
     },
   }

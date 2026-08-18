@@ -49,11 +49,13 @@ function runWriteBundle(
 ) {
   const context = {
     meta: { watchMode },
+    info: vi.fn(),
+    warn: vi.fn(),
     error(error: Error): never {
       throw error
     },
   }
-  const hook = plugin.writeBundle as {
+  const hook = plugin.writeBundle as unknown as {
     order: string
     handler: (this: typeof context, outputOptions: object) => Promise<void>
   }

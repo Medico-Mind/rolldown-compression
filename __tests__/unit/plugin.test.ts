@@ -3,7 +3,7 @@ import { gunzipSync } from 'node:zlib'
 import { describe, expect, it, vi } from 'vitest'
 
 import { resolveOptions } from '../../ts/options.js'
-import { createCompressionPlugin, createLogger } from '../../ts/plugin.js'
+import { createCompressionPlugin } from '../../ts/plugin.js'
 
 type Bundle = Record<
   string,
@@ -22,8 +22,12 @@ function runGenerateBundle(
   { watchMode = false } = {},
 ) {
   const emitted: EmittedAsset[] = []
+  const info = vi.fn()
+  const warn = vi.fn()
   const context = {
     meta: { watchMode },
+    info,
+    warn,
     emitFile(file: EmittedAsset) {
       emitted.push(file)
     },
@@ -36,7 +40,7 @@ function runGenerateBundle(
     outputOptions: object,
     bundle: Bundle,
   ) => Promise<void>
-  return { emitted, done: hook.call(context, {}, bundle) }
+  return { emitted, info, warn, done: hook.call(context, {}, bundle) }
 }
 
 describe('createCompressionPlugin', () => {
@@ -162,48 +166,10 @@ describe('createCompressionPlugin', () => {
   })
 
   it('logs an info summary after compressing', async () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
-    try {
-      const plugin = createCompressionPlugin(resolveOptions({ algorithms: ['gzip'] }))
-      const bundle: Bundle = { 'main.js': { type: 'chunk', code: 'const x = 1;\n'.repeat(500) } }
-      const { done } = runGenerateBundle(plugin, bundle)
-      await done
-      expect(info).toHaveBeenCalledWith(expect.stringMatching(/gzip: 1 file\(s\).*saved/))
-    } finally {
-      info.mockRestore()
-    }
-  })
-})
-
-describe('createLogger', () => {
-  it('gates messages by level', () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      const silent = createLogger('silent')
-      silent.info('a')
-      silent.warn('b')
-      silent.error('c')
-      expect(info).not.toHaveBeenCalled()
-      expect(warn).not.toHaveBeenCalled()
-      expect(error).not.toHaveBeenCalled()
-
-      const warnLevel = createLogger('warn')
-      warnLevel.info('a')
-      warnLevel.warn('b')
-      warnLevel.error('c')
-      expect(info).not.toHaveBeenCalled()
-      expect(warn).toHaveBeenCalledTimes(1)
-      expect(error).toHaveBeenCalledTimes(1)
-
-      const infoLevel = createLogger('info')
-      infoLevel.info('a')
-      expect(info).toHaveBeenCalledTimes(1)
-    } finally {
-      info.mockRestore()
-      warn.mockRestore()
-      error.mockRestore()
-    }
+    const plugin = createCompressionPlugin(resolveOptions({ algorithms: ['gzip'] }))
+    const bundle: Bundle = { 'main.js': { type: 'chunk', code: 'const x = 1;\n'.repeat(500) } }
+    const { done, info } = runGenerateBundle(plugin, bundle)
+    await done
+    expect(info).toHaveBeenCalledWith(expect.stringMatching(/gzip: 1 file\(s\).*saved/))
   })
 })
