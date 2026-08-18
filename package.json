@@ -84,9 +84,6 @@
     "universalize": "napi universalize",
     "version-packages": "changeset version && napi version && npm install --package-lock-only"
   },
-  "dependencies": {
-    "@rollup/pluginutils": "^5.4.0"
-  },
   "peerDependencies": {
     "rolldown": "^1.0.0"
   },

@@ -7,8 +7,6 @@
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 
-import { createFilter } from '@rollup/pluginutils'
-
 /** Accepted algorithm names, including aliases. */
 export type AlgorithmName =
   | 'gzip'
@@ -60,7 +58,7 @@ export type LogLevel = 'silent' | 'error' | 'warn' | 'info'
 /** Options accepted by {@link compression}. */
 export interface CompressionOptions {
   /**
-   * Files to compress. Strings are picomatch globs, RegExps are tested
+   * Files to compress. Strings are Node.js glob patterns, RegExps are tested
    * against the output file name.
    * @default /\.(html|xml|css|json|js|mjs|svg|yaml|yml|toml|txt|wasm)$/
    */
@@ -185,6 +183,33 @@ const LEVEL_RANGES: Record<CanonicalAlgorithm, [number, number]> = {
 }
 
 const LOG_LEVELS: readonly LogLevel[] = ['silent', 'error', 'warn', 'info']
+
+type FilterPattern = string | RegExp
+
+function toArray(patterns: FilterPattern | FilterPattern[] | undefined): FilterPattern[] {
+  if (patterns === undefined) return []
+  return Array.isArray(patterns) ? patterns : [patterns]
+}
+
+function createFilter(
+  include: FilterPattern | FilterPattern[] | undefined,
+  exclude: FilterPattern | FilterPattern[] | undefined,
+): (fileName: string) => boolean {
+  const includes = toArray(include)
+  const excludes = toArray(exclude)
+  const matches = (fileName: string, pattern: FilterPattern) => {
+    if (typeof pattern === 'string') return path.matchesGlob(fileName, pattern)
+    pattern.lastIndex = 0
+    return pattern.test(fileName)
+  }
+
+  return (fileName) => {
+    if (typeof fileName !== 'string' || fileName.includes('\0')) return false
+    const normalizedFileName = fileName.replaceAll('\\', '/')
+    if (excludes.some((pattern) => matches(normalizedFileName, pattern))) return false
+    return includes.length === 0 || includes.some((pattern) => matches(normalizedFileName, pattern))
+  }
+}
 
 /** File extensions produced by this plugin; used by the re-compression guard. */
 export const COMPRESSED_EXTENSION_RE = /\.(gz|br|zst)$/i
@@ -356,9 +381,7 @@ export function resolveOptions(options: CompressionOptions = {}): ResolvedOption
   }
 
   return {
-    // `resolve: false` keeps matching relative to bundle file names instead
-    // of resolving globs against the current working directory.
-    filter: createFilter(include, exclude, { resolve: false }),
+    filter: createFilter(include, exclude),
     threshold,
     algorithms: algorithms.map(resolveAlgorithm),
     filename,
