@@ -19,8 +19,9 @@ zstd = { version = "0.13", default-features = false }
 anymap3 = "1"
 
 [features]
-hotpath = ["hotpath/hotpath"]
-hotpath-alloc = ["hotpath/hotpath-alloc"]
+hotpath = ["hotpath/hotpath", "simd-brotli/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc", "simd-brotli/hotpath-alloc"]
+hotpath-cpu = ["hotpath/hotpath-cpu", "simd-brotli/hotpath-cpu"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = "0.1"
