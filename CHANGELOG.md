@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.4.1
+
+### Patch Changes
+
+- [`de208d7`](https://github.com/Medico-Mind/rolldown-compression/commit/de208d744e6cf3bb3224cd739b5dabb88230e001) Thanks [@Mnwa](https://github.com/Mnwa)! - Return mimalloc as default
+
 ## 2.4.0
 
 ### Minor Changes
