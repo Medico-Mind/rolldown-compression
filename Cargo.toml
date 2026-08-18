@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-simd-brotli = { version = "9" }
+simd-brotli = { version = "10" }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 hotpath = "0.23"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }

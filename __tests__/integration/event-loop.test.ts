@@ -2,10 +2,41 @@ import { describe, expect, it } from 'vitest'
 
 import { compressBuffers } from '../../ts/binding.js'
 
+/**
+ * Builds JS-shaped source that brotli cannot shortcut. Highly repetitive input
+ * (e.g. one line repeated) collapses into a handful of enormous LZ matches, so
+ * even quality 11 finishes in milliseconds and the batch never gets slow enough
+ * for this test to prove anything. Structurally uniform lines carrying
+ * high-entropy identifiers instead give the q11 match finder plenty of near
+ * misses to evaluate and no cheap win, which is what makes it cost real CPU.
+ *
+ * Deterministic (xorshift32 from a fixed seed) so a failure reproduces exactly.
+ */
+function makeSource(lineCount: number): string {
+  let seed = 0x9e3779b9
+  const next = () => {
+    seed ^= seed << 13
+    seed >>>= 0
+    seed ^= seed >>> 17
+    seed ^= seed << 5
+    seed >>>= 0
+    return seed
+  }
+
+  const lines: string[] = []
+  for (let index = 0; index < lineCount; index++) {
+    lines.push(
+      `export const sym_${next().toString(36)} = { id: ${index}, hash: '${next().toString(36)}${next().toString(36)}', tag: '${next().toString(16)}' }`,
+    )
+  }
+  return lines.join('\n')
+}
+
 describe('event loop responsiveness', () => {
   it('keeps timers ticking while a heavy batch compresses natively', async () => {
-    // ~32 MB of compressible text at brotli quality 11 takes seconds of CPU.
-    const payload = Buffer.from('const answer = 42; // the meaning of life\n'.repeat(800_000))
+    // ~1.6 MB of incompressible-ish source per chunk; brotli quality 11 spends
+    // roughly a second of CPU on the batch, far above the 250 ms floor below.
+    const payload = Buffer.from(makeSource(20_000))
     const tasks = Array.from({ length: 4 }, (_, index) => ({
       fileName: `chunk-${index}.js`,
       algorithm: 'brotli',
@@ -33,6 +64,9 @@ describe('event loop responsiveness', () => {
       for (const result of results) {
         expect(result.error).toBeUndefined()
         expect(result.compressedSize).toBeGreaterThan(0)
+        // Guard the premise: if this ever approaches 1.0 the payload became
+        // trivially compressible again and the timing floor will follow.
+        expect(result.compressedSize).toBeLessThan(payload.byteLength / 2)
       }
       // The batch must have been slow enough for the assertion to mean anything.
       expect(elapsed).toBeGreaterThan(250)
