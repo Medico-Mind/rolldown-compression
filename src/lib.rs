@@ -5,7 +5,7 @@ pub mod scheduler;
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "hotpath-alloc")))]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: mimalloc3::MiMalloc = mimalloc3::MiMalloc;
 
 // `hotpath-alloc` counts allocations at the global allocator, so it has to sit
 // in front of mimalloc rather than replace it: registered the other way round

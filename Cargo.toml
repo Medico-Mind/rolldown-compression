@@ -16,7 +16,6 @@ napi = { version = "3", default-features = false, features = ["napi10", "dyn-sym
 napi-derive = "3"
 rayon = "1.12"
 zstd = { version = "0.13", default-features = false }
-anymap3 = "1"
 
 [features]
 hotpath = ["hotpath/hotpath", "simd-brotli/hotpath"]
@@ -24,13 +23,13 @@ hotpath-alloc = ["hotpath/hotpath-alloc", "simd-brotli/hotpath-alloc"]
 hotpath-cpu = ["hotpath/hotpath-cpu", "simd-brotli/hotpath-cpu"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-mimalloc = "0.1"
+mimalloc3 = "0.1"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 zstd = { version = "0.13", default-features = false, features = ["no_asm"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]
-mimalloc = { version = "0.1", features = ["local_dynamic_tls"] }
+mimalloc3 = { version = "0.1", features = ["local_dynamic_tls"] }
 
 [build-dependencies]
 napi-build = "2"
