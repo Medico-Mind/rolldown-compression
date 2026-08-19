@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.4.2
+
+### Patch Changes
+
+- [`31f7d61`](https://github.com/Medico-Mind/rolldown-compression/commit/31f7d612af22a63e3de8a870d7057eef6904f659) Thanks [@Mnwa](https://github.com/Mnwa)! - Swap mimalloc package to new modern release. Also bump brotli to reduce memory allocs
+
 ## 2.4.1
 
 ### Patch Changes
