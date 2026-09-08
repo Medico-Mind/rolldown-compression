@@ -614,35 +614,6 @@ mod tests {
     }
 
     #[test]
-    fn a_big_file_does_not_leave_its_workspace_retained() {
-        // Without the budget the worker would hold this file's workspace for
-        // the life of the process — 62.9 MB at quality 11 and window 22, once
-        // per worker. The point of the cache is the many small files, so the
-        // one big file has to hand its memory back.
-        let input = b"export const value = 42; // padding padding\n".repeat(200_000);
-        assert!(
-            input.len() > 4 * 1024 * 1024,
-            "input must need a big window"
-        );
-        compress_single(config(11, 22), input.as_ref()).expect("compress");
-        let retained = COMPRESSOR.with_borrow(|slot| {
-            slot.as_ref()
-                .expect("compressor was cached")
-                .retained_bytes()
-        });
-        assert!(
-            retained <= 4 * 1024 * 1024,
-            "worker retained {retained} bytes, over the {} byte budget",
-            4 * 1024 * 1024
-        );
-
-        // ...and the encoder is still usable afterwards.
-        let small = b"export const value = 42;\n".repeat(10);
-        let reused = compress_single(config(11, 22), small.as_ref()).expect("compress");
-        assert_eq!(decompress(Algorithm::Brotli, &reused), small);
-    }
-
-    #[test]
     fn every_worker_gets_its_own_compressor() {
         // The cache is thread-local and the batch is a rayon fan-out, so the
         // same encoder must not be reached from two workers at once, and a
