@@ -4,8 +4,10 @@ Thanks for your interest in contributing! This document covers everything you ne
 
 ## Prerequisites
 
-- **Node.js >= 18** (CI runs on Node 26)
+- **Node.js ^22.18.0, ^24.11.0, or >=26.0.0** for development (required by the build tooling; CI runs on Node 26)
 - **Rust** (stable toolchain, with `rustfmt` and `clippy` components) — install via [rustup](https://rustup.rs)
+
+The published library supports **Node.js >=22.14.0**. The development requirement above applies to building and testing this repository.
 
 No C toolchain or cmake is needed: the gzip backend is pure-Rust (`zlib-rs`).
 
