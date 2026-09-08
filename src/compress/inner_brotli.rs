@@ -217,35 +217,9 @@ fn compress_parallel(
     input: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let tasks = TaskCount::try_from(rayon::current_num_threads().max(1))?;
-    let mut compressor = ParallelCompressor::new(
-        config,
-        ParallelConfig::from(segment)
-            .with_minimum_parallel_size(u64::MAX)
-            // The compressor lives for one call, so retaining idle workers past
-            // the batch only holds their workspaces until the drop below.
-            .with_max_retained_workers(0),
-    )?;
 
-    // `BatchConfig::memory` refuses a batch whose worst-case staging exceeds
-    // the ceiling it is given, so ask the encoder what that worst case is
-    // rather than trying to predict it. The probe config carries the same task
-    // count and staging kind, which is all the estimate depends on; its own
-    // ceiling is irrelevant to the answer.
-    let probe = BatchConfig::memory(tasks, usize::MAX);
-    let estimate = compressor.estimate_source(input.len() as u64, &probe)?;
-
-    // The estimate lands just under what `prepare_slice` actually demands:
-    // measured against mbrotli 0.1.0 it is short by exactly 40 bytes per
-    // segment, at every input length, segment size and task count tried
-    // (1 byte to 32 MiB, 1 to 256 segments). Rounding that up to a page per
-    // segment covers the shortfall a hundred times over and still tracks the
-    // encoder's own arithmetic, which a hand-fitted formula would not.
-    let staging_bound = estimate
-        .maximum_staged_bytes
-        .saturating_add(4096 * (estimate.segment_count + 1)) as usize;
-
-    let mut prepared =
-        compressor.prepare_slice(input, BatchConfig::memory(tasks, staging_bound))?;
+    let mut compressor = ParallelCompressor::new(config, ParallelConfig::from(segment))?;
+    let mut prepared = compressor.prepare_slice(input, BatchConfig::auto(tasks))?;
 
     prepared
         .take_tasks()?
