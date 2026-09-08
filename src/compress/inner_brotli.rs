@@ -10,7 +10,6 @@ use crate::error::Error;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use super::InputBuffer;
-use mbrotli::compressor::RetentionPolicy;
 use mbrotli::compressor::parallel::{
     BatchConfig, ParallelCompressor, ParallelConfig, SegmentSize, TaskCount,
 };
@@ -132,25 +131,6 @@ fn segment_size(section_size: usize) -> SegmentSize {
         .unwrap_or(SegmentSize::DEFAULT)
 }
 
-/// How much encoder workspace a worker may hold onto between files.
-///
-/// The cache only pays off when consecutive files on a worker share a shape,
-/// and what a retained workspace costs depends entirely on that shape: at
-/// quality 11 it is 1.1 MB at window 10 and 2.3 MB at window 14, but 62.9 MB
-/// at window 22 and 188.7 MB at window 24. Retaining the expensive end would
-/// mean every worker holding its high-water mark for the life of the process
-/// — over a gigabyte across an 18-worker pool sitting idle between builds.
-///
-/// A budget inverts that neatly, because the shapes worth keeping and the
-/// shapes worth paying for are the same ones. Small files are the bulk of a
-/// bundle, are cheap to retain, and are where per-file setup is a real share
-/// of the work; the rare big file releases its workspace as soon as it is
-/// done, and rebuilding it costs nothing against the seconds it spends
-/// compressing.
-const COMPRESSOR_RETENTION: RetentionPolicy = RetentionPolicy::Bounded {
-    max_bytes: 4 * 1024 * 1024,
-};
-
 thread_local! {
     /// The calling worker's serial encoder, reused across every file it takes.
     ///
@@ -189,11 +169,7 @@ fn compress_single(config: EncoderConfig, input: &[u8]) -> Result<Vec<u8>, Error
         let compressor = slot
             .as_mut()
             .expect("compressor is present after the match above");
-        let compressed = compressor.compress(input).map_err(Error::from);
-        // Hand back anything above the budget rather than holding this file's
-        // workspace until the worker's next one, which may never come.
-        compressor.trim(COMPRESSOR_RETENTION);
-        compressed
+        compressor.compress(input).map_err(Error::from)
     })
 }
 
