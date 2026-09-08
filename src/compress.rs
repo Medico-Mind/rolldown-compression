@@ -16,6 +16,8 @@ mod inner_zstd;
 use std::fmt::Display;
 use std::str::FromStr;
 
+use crate::error::Error;
+
 pub use inner_brotli::{BROTLI_DEFAULT_WINDOW_BITS, validate_section_size, validate_window_bits};
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
@@ -53,20 +55,22 @@ impl Algorithm {
         }
     }
 
-    pub fn validate_level(self, level: u32) -> Result<(), String> {
+    pub fn validate_level(self, level: u32) -> Result<(), Error> {
         let (min, max) = self.level_range();
         if level < min || level > max {
-            return Err(format!(
-                "invalid {} level {level}: expected {min}..={max}",
-                self
-            ));
+            return Err(Error::InvalidLevel {
+                algorithm: self,
+                level,
+                min,
+                max,
+            });
         }
         Ok(())
     }
 }
 
 impl FromStr for Algorithm {
-    type Err = String;
+    type Err = Error;
 
     /// Parse a canonical algorithm name coming over the FFI boundary.
     ///
@@ -77,9 +81,7 @@ impl FromStr for Algorithm {
             "gzip" => Ok(Self::Gzip),
             "brotli" => Ok(Self::Brotli),
             "zstd" => Ok(Self::Zstd),
-            other => Err(format!(
-                "unknown algorithm `{other}`, expected one of: gzip, brotli, zstd"
-            )),
+            other => Err(Error::UnknownAlgorithm(other.to_owned())),
         }
     }
 }
@@ -111,7 +113,7 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     algorithm.validate_level(level)?;
     let mut output = match algorithm {
         Algorithm::Gzip => inner_gzip::compress(level, input.as_ref()),
@@ -141,7 +143,7 @@ mod tests {
         window_bits: Option<u32>,
         section_size: Option<u32>,
         input: InputBuffer,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, Error> {
         super::compress(algorithm, level, window_bits, section_size, input)
     }
 

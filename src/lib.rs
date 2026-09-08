@@ -1,6 +1,7 @@
 #![deny(clippy::all)]
 
 pub mod compress;
+pub mod error;
 pub mod scheduler;
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "hotpath-alloc")))]
@@ -12,8 +13,8 @@ static GLOBAL: mimalloc3::MiMalloc = mimalloc3::MiMalloc;
 // every allocation bypasses the counter and the report reads 0 B throughout.
 #[cfg(all(not(target_family = "wasm"), feature = "hotpath-alloc"))]
 #[global_allocator]
-static GLOBAL: hotpath::CountingAllocator<mimalloc::MiMalloc> =
-    hotpath::CountingAllocator::with(mimalloc::MiMalloc);
+static GLOBAL: hotpath::CountingAllocator<mimalloc3::MiMalloc> =
+    hotpath::CountingAllocator::with(mimalloc3::MiMalloc);
 
 // The napi glue references Node-API symbols that only exist inside a Node.js
 // process, so it is compiled out of the `cargo test` harness. All logic worth
@@ -25,6 +26,7 @@ mod binding {
     use rayon::prelude::*;
 
     use crate::compress::{Algorithm, validate_section_size, validate_window_bits};
+    use crate::error::Error as CompressionError;
     use crate::scheduler::{BatchItem, BatchOutcome, run_batch};
 
     /// One compression task: pairs with the buffer at the same index in the
@@ -164,7 +166,7 @@ mod binding {
                         data: result.outcome.data.into(),
                         original_size: result.original_size,
                         skipped: result.outcome.skipped,
-                        error: result.outcome.error,
+                        error: result.outcome.error.map(|error| error.to_string()),
                     })
                     .collect()
             }))
@@ -233,43 +235,30 @@ mod binding {
         ensure_profiling(&env);
 
         if tasks.len() != buffers.len() {
-            return Err(Error::new(
-                Status::InvalidArg,
-                format!(
-                    "tasks and buffers must have the same length (got {} tasks, {} buffers)",
-                    tasks.len(),
-                    buffers.len()
-                ),
-            ));
+            return Err(CompressionError::BatchLengthMismatch {
+                tasks: tasks.len(),
+                buffers: buffers.len(),
+            }
+            .into());
         }
 
         for buffer in &buffers {
             if buffer.len() > u32::MAX as usize {
-                return Err(Error::new(
-                    Status::InvalidArg,
-                    "buffers larger than 4 GiB are not supported",
-                ));
+                return Err(CompressionError::BufferTooLarge.into());
             }
         }
 
         let mut parsed = Vec::with_capacity(tasks.len());
         for task in tasks {
-            let algorithm = task
-                .algorithm
-                .parse::<Algorithm>()
-                .map_err(|err| Error::new(Status::InvalidArg, err))?;
+            let algorithm = task.algorithm.parse::<Algorithm>()?;
             let level = task.level.unwrap_or_else(|| algorithm.default_level());
-            algorithm
-                .validate_level(level)
-                .map_err(|err| Error::new(Status::InvalidArg, err))?;
+            algorithm.validate_level(level)?;
             if algorithm == Algorithm::Brotli {
                 if let Some(window_bits) = task.window_bits {
-                    validate_window_bits(window_bits)
-                        .map_err(|err| Error::new(Status::InvalidArg, err))?;
+                    validate_window_bits(window_bits)?;
                 }
                 if let Some(section_size) = task.section_size {
-                    validate_section_size(section_size)
-                        .map_err(|err| Error::new(Status::InvalidArg, err))?;
+                    validate_section_size(section_size)?;
                 }
             }
             parsed.push(ParsedTask {

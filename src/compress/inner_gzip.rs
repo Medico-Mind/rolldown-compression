@@ -2,6 +2,8 @@
 
 use std::io::Read;
 
+use crate::error::Error;
+
 /// Calculates the maximum upper bound of bytes required to safely hold
 /// compressed data in the standard gzip format for a given input length.
 ///
@@ -13,7 +15,7 @@ fn compress_bound_formula(source_len: usize) -> usize {
 }
 
 #[hotpath::measure(label = "compress_gzip")]
-pub fn compress(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
+pub fn compress(level: u32, input: &[u8]) -> Result<Vec<u8>, Error> {
     let mut output = Vec::with_capacity(compress_bound_formula(input.len()));
     // Read-side encoder: every `read` deflates, so the wrapper reports real
     // compression work and compressed bytes out rather than buffered writes.
@@ -21,8 +23,6 @@ pub fn compress(level: u32, input: &[u8]) -> Result<Vec<u8>, String> {
         flate2::GzBuilder::new().buf_read(input, flate2::Compression::new(level)),
         label = "gzip-deflate"
     );
-    encoder
-        .read_to_end(&mut output)
-        .map_err(|err| format!("gzip compression failed: {err}"))?;
+    encoder.read_to_end(&mut output).map_err(Error::Gzip)?;
     Ok(output)
 }

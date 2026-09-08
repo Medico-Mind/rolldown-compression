@@ -9,6 +9,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use rayon::prelude::*;
 
 use crate::compress::{Algorithm, InputBuffer, compress};
+use crate::error::Error;
 
 /// A single unit of compression work.
 ///
@@ -30,11 +31,11 @@ pub struct BatchItem {
 /// - `skipped` is true: compressed output was >= input size and skipping was
 ///   requested, `data` is empty;
 /// - otherwise `data` holds the compressed bytes.
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct BatchOutcome {
     pub data: Vec<u8>,
     pub skipped: bool,
-    pub error: Option<String>,
+    pub error: Option<Error>,
 }
 
 /// Scheduling rank of an algorithm: brotli runs first, zstd next, gzip last.
@@ -140,7 +141,7 @@ fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
             item.input,
         )
     }))
-    .unwrap_or_else(|_| Err(format!("{} compression panicked unexpectedly", algorithm)));
+    .unwrap_or(Err(Error::CompressionPanicked(algorithm)));
 
     match result {
         Ok(data) if skip_if_larger_or_equal && data.len() >= input_len => BatchOutcome {
@@ -400,7 +401,15 @@ mod tests {
         let outcomes = run_batch_on_pool(items, 0, false);
         assert!(outcomes[0].error.is_none());
         assert!(!outcomes[0].data.is_empty());
-        assert!(outcomes[1].error.is_some());
+        assert!(matches!(
+            outcomes[1].error,
+            Some(Error::InvalidLevel {
+                algorithm: Algorithm::Zstd,
+                level: 99,
+                ..
+            })
+        ));
         assert!(outcomes[1].data.is_empty());
+        assert!(!outcomes[1].skipped);
     }
 }

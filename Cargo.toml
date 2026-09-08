@@ -15,6 +15,7 @@ hotpath = "0.25"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
 napi-derive = "3"
 rayon = "1.12"
+thiserror = "2"
 zstd = { version = "0.14", default-features = false }
 
 [dev-dependencies]

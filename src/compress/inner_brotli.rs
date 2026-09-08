@@ -5,13 +5,15 @@
 //! dependency because `mbrotli` ships no decoder and the round-trip tests
 //! need one.
 
+use crate::error::Error;
+
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use super::InputBuffer;
+use mbrotli::compressor::RetentionPolicy;
 use mbrotli::compressor::parallel::{
     BatchConfig, ParallelCompressor, ParallelConfig, SegmentSize, TaskCount,
 };
-use mbrotli::compressor::RetentionPolicy;
 use mbrotli::{Compressor, EncoderConfig, Quality, Window};
 use std::cell::RefCell;
 use std::ops::RangeInclusive;
@@ -28,11 +30,9 @@ const BROTLI_MIN_SECTIONS: usize = 2;
 const WINDOW_BITS_RANGE: RangeInclusive<u32> = 10..=24;
 
 /// Validate a brotli window size (log2 of window size, `lgwin`).
-pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {
+pub fn validate_window_bits(window_bits: u32) -> Result<(), Error> {
     if !WINDOW_BITS_RANGE.contains(&window_bits) {
-        return Err(format!(
-            "invalid brotli windowBits {window_bits}: expected 10..=24"
-        ));
+        return Err(Error::InvalidWindowBits(window_bits));
     }
     Ok(())
 }
@@ -42,11 +42,9 @@ pub fn validate_window_bits(window_bits: u32) -> Result<(), String> {
 /// Only zero is rejected. The encoder accepts segments between
 /// [`SegmentSize::MIN`] and [`SegmentSize::MAX`], and a value outside that is
 /// clamped rather than refused — see [`segment_size`].
-pub fn validate_section_size(section_size: u32) -> Result<(), String> {
+pub fn validate_section_size(section_size: u32) -> Result<(), Error> {
     if section_size == 0 {
-        return Err(format!(
-            "invalid brotli sectionSize {section_size}: expected a positive number of bytes"
-        ));
+        return Err(Error::InvalidSectionSize(section_size));
     }
     Ok(())
 }
@@ -67,7 +65,7 @@ pub fn compress(
     window_bits: Option<u32>,
     section_size: Option<u32>,
     input: InputBuffer,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
     validate_window_bits(window_bits)?;
     if let Some(section_size) = section_size {
@@ -90,8 +88,7 @@ pub fn compress(
         .next_power_of_two()
         .trailing_zeros()
         .clamp(*WINDOW_BITS_RANGE.start(), *WINDOW_BITS_RANGE.end());
-    let window =
-        Window::standard(window_bits.min(input_window_bits) as u8).map_err(|e| e.to_string())?;
+    let window = Window::standard(window_bits.min(input_window_bits) as u8)?;
     // Deriving the section size from the shrunken window is safe: the window
     // is at most one bit past the input length, so the sections it implies are
     // already wider than the input and the multi-section threshold below stays
@@ -101,7 +98,7 @@ pub fn compress(
         .map(|section_size| section_size as usize)
         .unwrap_or(1usize << (u32::from(window.bits()) + 1));
     let segment = segment_size(section_size);
-    let quality = Quality::try_from(level as u8).map_err(|e| e.to_string())?;
+    let quality = Quality::try_from(level as u8)?;
     let config = EncoderConfig::default()
         .with_quality(quality)
         .with_window(window);
@@ -183,16 +180,16 @@ thread_local! {
 /// share a shape; `reconfigure` is transactional — it drops every trace of the
 /// previous stream while keeping whatever buffers still apply — so the output
 /// is what a fresh `Compressor` would have produced.
-fn compress_single(config: EncoderConfig, input: &[u8]) -> Result<Vec<u8>, String> {
+fn compress_single(config: EncoderConfig, input: &[u8]) -> Result<Vec<u8>, Error> {
     COMPRESSOR.with_borrow_mut(|slot| {
         match slot {
-            Some(compressor) => compressor.reconfigure(config).map_err(|e| e.to_string())?,
-            None => *slot = Some(Compressor::new(config).map_err(|e| e.to_string())?),
+            Some(compressor) => compressor.reconfigure(config)?,
+            None => *slot = Some(Compressor::new(config)?),
         }
         let compressor = slot
             .as_mut()
             .expect("compressor is present after the match above");
-        let compressed = compressor.compress(input).map_err(|e| e.to_string());
+        let compressed = compressor.compress(input).map_err(Error::from);
         // Hand back anything above the budget rather than holding this file's
         // workspace until the worker's next one, which may never come.
         compressor.trim(COMPRESSOR_RETENTION);
@@ -218,9 +215,8 @@ fn compress_parallel(
     config: EncoderConfig,
     segment: SegmentSize,
     input: &[u8],
-) -> Result<Vec<u8>, String> {
-    let tasks = TaskCount::try_from(rayon::current_num_threads().max(1))
-        .map_err(|e| e.to_string())?;
+) -> Result<Vec<u8>, Error> {
+    let tasks = TaskCount::try_from(rayon::current_num_threads().max(1))?;
     let mut compressor = ParallelCompressor::new(
         config,
         ParallelConfig::from(segment)
@@ -228,8 +224,7 @@ fn compress_parallel(
             // The compressor lives for one call, so retaining idle workers past
             // the batch only holds their workspaces until the drop below.
             .with_max_retained_workers(0),
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     // `BatchConfig::memory` refuses a batch whose worst-case staging exceeds
     // the ceiling it is given, so ask the encoder what that worst case is
@@ -237,9 +232,7 @@ fn compress_parallel(
     // count and staging kind, which is all the estimate depends on; its own
     // ceiling is irrelevant to the answer.
     let probe = BatchConfig::memory(tasks, usize::MAX);
-    let estimate = compressor
-        .estimate_source(input.len() as u64, &probe)
-        .map_err(|e| e.to_string())?;
+    let estimate = compressor.estimate_source(input.len() as u64, &probe)?;
 
     // The estimate lands just under what `prepare_slice` actually demands:
     // measured against mbrotli 0.1.0 it is short by exactly 40 bytes per
@@ -251,21 +244,17 @@ fn compress_parallel(
         .maximum_staged_bytes
         .saturating_add(4096 * (estimate.segment_count + 1)) as usize;
 
-    let mut prepared = compressor
-        .prepare_slice(input, BatchConfig::memory(tasks, staging_bound))
-        .map_err(|e| e.to_string())?;
+    let mut prepared =
+        compressor.prepare_slice(input, BatchConfig::memory(tasks, staging_bound))?;
 
     prepared
-        .take_tasks()
-        .map_err(|e| e.to_string())?
+        .take_tasks()?
         .into_par_iter()
         .with_max_len(1)
         .for_each(|task| task.run());
 
     let mut output = Vec::new();
-    prepared
-        .finish_into(&mut output)
-        .map_err(|e| e.to_string())?;
+    prepared.finish_into(&mut output)?;
 
     Ok(output)
 }
@@ -348,7 +337,10 @@ mod tests {
         assert_eq!(segment_size(16 << 20).get(), 16 << 20);
         assert_eq!(segment_size(u32::MAX as usize).get(), 16 << 20);
         // The default at the default window is two windows, inside the range.
-        assert_eq!(segment_size(DEFAULT_SECTION_SIZE).get(), DEFAULT_SECTION_SIZE);
+        assert_eq!(
+            segment_size(DEFAULT_SECTION_SIZE).get(),
+            DEFAULT_SECTION_SIZE
+        );
     }
 
     #[test]
@@ -393,14 +385,28 @@ mod tests {
         // A ~1 MiB input is one section at the default and several at 256 KiB.
         let input = b"export const value = 42; // padding padding\n".repeat(24_000);
         assert!(input.len() < DEFAULT_THRESHOLD);
-        assert_eq!(task_count(BROTLI_DEFAULT_WINDOW_BITS, DEFAULT_SECTION_SIZE, input.as_ref()), 1);
+        assert_eq!(
+            task_count(
+                BROTLI_DEFAULT_WINDOW_BITS,
+                DEFAULT_SECTION_SIZE,
+                input.as_ref()
+            ),
+            1
+        );
         assert!(task_count(BROTLI_DEFAULT_WINDOW_BITS, 256 * 1024, input.as_ref()) > 1);
 
         let big = b"export const value = 42; // padding padding\n".repeat(400_000);
         assert!(big.len() >= DEFAULT_THRESHOLD);
-        let tasks = task_count(BROTLI_DEFAULT_WINDOW_BITS, DEFAULT_SECTION_SIZE, big.as_ref());
+        let tasks = task_count(
+            BROTLI_DEFAULT_WINDOW_BITS,
+            DEFAULT_SECTION_SIZE,
+            big.as_ref(),
+        );
         assert!(tasks > 1 && tasks <= threads.max(1));
-        assert_eq!(task_count(BROTLI_DEFAULT_WINDOW_BITS, DEFAULT_SECTION_SIZE, b"small"), 1);
+        assert_eq!(
+            task_count(BROTLI_DEFAULT_WINDOW_BITS, DEFAULT_SECTION_SIZE, b"small"),
+            1
+        );
     }
 
     #[test]
@@ -435,7 +441,8 @@ mod tests {
                     .expect("estimate");
                 let bound = estimate
                     .maximum_staged_bytes
-                    .saturating_add(4096 * (estimate.segment_count + 1)) as usize;
+                    .saturating_add(4096 * (estimate.segment_count + 1))
+                    as usize;
                 let mut prepared = compressor
                     .prepare_slice(input.as_ref(), BatchConfig::memory(tasks, bound))
                     .expect("prepare");
@@ -461,7 +468,13 @@ mod tests {
         // the encoder says it needs. If that ever stops being enough,
         // `prepare_slice` fails at runtime, so pin it with the sizes most
         // likely to expose an off-by-something.
-        for len in [0usize, 1, 64 * 1024, DEFAULT_THRESHOLD, DEFAULT_THRESHOLD + 12_345] {
+        for len in [
+            0usize,
+            1,
+            64 * 1024,
+            DEFAULT_THRESHOLD,
+            DEFAULT_THRESHOLD + 12_345,
+        ] {
             let input = pseudo_random(len);
             for section_size in [64 * 1024usize, DEFAULT_SECTION_SIZE] {
                 compress_parallel(
@@ -489,8 +502,14 @@ mod tests {
         let compressed: Vec<_> = (0..jobs)
             .into_par_iter()
             .map(|_| {
-                compress_any(Algorithm::Brotli, 5, None, Some(section_size), input.clone())
-                    .expect("compress")
+                compress_any(
+                    Algorithm::Brotli,
+                    5,
+                    None,
+                    Some(section_size),
+                    input.clone(),
+                )
+                .expect("compress")
             })
             .collect();
         for output in compressed {
@@ -585,7 +604,10 @@ mod tests {
         let input = b"export const value = 42; // padding padding\n".repeat(24_000);
         let window_bits = 18u32;
         assert!(input.len() < DEFAULT_THRESHOLD);
-        assert_eq!(task_count(window_bits, DEFAULT_SECTION_SIZE, input.as_ref()), 1);
+        assert_eq!(
+            task_count(window_bits, DEFAULT_SECTION_SIZE, input.as_ref()),
+            1
+        );
         assert!(task_count(window_bits, 1 << (window_bits + 1), input.as_ref()) > 1);
 
         let compressed = compress_any(Algorithm::Brotli, 5, Some(window_bits), None, input.clone())
@@ -648,10 +670,15 @@ mod tests {
         // per worker. The point of the cache is the many small files, so the
         // one big file has to hand its memory back.
         let input = b"export const value = 42; // padding padding\n".repeat(200_000);
-        assert!(input.len() > 4 * 1024 * 1024, "input must need a big window");
+        assert!(
+            input.len() > 4 * 1024 * 1024,
+            "input must need a big window"
+        );
         compress_single(config(11, 22), input.as_ref()).expect("compress");
         let retained = COMPRESSOR.with_borrow(|slot| {
-            slot.as_ref().expect("compressor was cached").retained_bytes()
+            slot.as_ref()
+                .expect("compressor was cached")
+                .retained_bytes()
         });
         assert!(
             retained <= 4 * 1024 * 1024,
@@ -681,9 +708,14 @@ mod tests {
                 let level = (i % 12) as u32;
                 let window_bits = 10 + (i % 15) as u32;
                 let input = b"function chunk(a, b) { return a + b; }\n".repeat(100 + i % 500);
-                let compressed =
-                    compress_any(Algorithm::Brotli, level, Some(window_bits), None, input.clone())
-                        .expect("compress");
+                let compressed = compress_any(
+                    Algorithm::Brotli,
+                    level,
+                    Some(window_bits),
+                    None,
+                    input.clone(),
+                )
+                .expect("compress");
                 assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
                 (level, window_bits, input, compressed)
             })
@@ -715,8 +747,12 @@ mod tests {
         assert!(input.len() < DEFAULT_SECTION_SIZE);
         assert_eq!(
             compress_single(config(5, 22), input.as_ref()).expect("serial"),
-            compress_parallel(config(5, 22), segment_size(DEFAULT_SECTION_SIZE), input.as_ref())
-                .expect("parallel"),
+            compress_parallel(
+                config(5, 22),
+                segment_size(DEFAULT_SECTION_SIZE),
+                input.as_ref()
+            )
+            .expect("parallel"),
         );
     }
 }
