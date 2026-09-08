@@ -6,7 +6,16 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!index.js", "!index.d.ts", "!npm", "!dist", "!coverage", "!target"]
+    "includes": [
+      "**",
+      "!index.js",
+      "!index.d.ts",
+      "!rolldown-compression.wasi.d.cts",
+      "!npm",
+      "!dist",
+      "!coverage",
+      "!target"
+    ]
   },
   "formatter": {
     "enabled": true,
