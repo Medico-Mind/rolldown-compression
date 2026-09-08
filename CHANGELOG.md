@@ -1,5 +1,15 @@
 # @medicomind/rolldown-compression
 
+## 2.5.1
+
+### Patch Changes
+
+- [`87ff2d5`](https://github.com/Medico-Mind/rolldown-compression/commit/87ff2d51ac65a3fcda9abf37bb4bf5d15718da87) Thanks [@Mnwa](https://github.com/Mnwa)! - Remove retention policy
+
+- [`63191bf`](https://github.com/Medico-Mind/rolldown-compression/commit/63191bf37d51b8deed07ed6cddc70991be5bd22c) Thanks [@Mnwa](https://github.com/Mnwa)! - Update the WebAssembly runtime dependencies to @napi-rs/wasm-runtime 1.2.3 and emnapi 2.0.0-alpha.5.
+
+- [`8fa09dc`](https://github.com/Medico-Mind/rolldown-compression/commit/8fa09dc5159f9a0e5f0dad1321f9084181a392d8) Thanks [@Mnwa](https://github.com/Mnwa)! - Simplify brotli parallel config
+
 ## 2.5.0
 
 ### Minor Changes
