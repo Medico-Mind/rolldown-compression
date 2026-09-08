@@ -39,11 +39,15 @@ mod binding {
         pub level: Option<u32>,
         /// Brotli only: log2 window size (10-24, default 22).
         pub window_bits: Option<u32>,
-        /// Brotli only: target section size in bytes per worker thread when
-        /// large inputs are split across the brotli worker pool; inputs at
-        /// least twice this size take the multithreaded path. Defaults
-        /// to two windows (`2^(windowBits + 1)` bytes), i.e. 8 MiB and
-        /// multithreading from 16 MiB at the default window.
+        /// Brotli only: target section size in bytes when a large input is
+        /// split across the brotli worker pool; inputs at least twice this
+        /// size take the multithreaded path. Defaults to two windows
+        /// (`2^(windowBits + 1)` bytes), i.e. 8 MiB and multithreading from
+        /// 16 MiB at the default window.
+        ///
+        /// Smaller sections finish large files faster and cost compression
+        /// ratio. The encoder segments between 64 KiB and 16 MiB, and values
+        /// outside that range are clamped to it.
         pub section_size: Option<u32>,
     }
 

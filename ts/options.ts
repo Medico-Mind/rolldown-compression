@@ -27,11 +27,12 @@ export interface GzipOptions {
 
 /**
  * Brotli options. `quality`: 0-11, default 11. `windowBits`: 10-24, default 22.
- * `sectionSize`: target bytes per worker thread when large inputs are split
- * across the native brotli worker pool; inputs at least twice this size
- * take the multithreaded path. Defaults to two windows (`2^(windowBits + 1)`
- * bytes), i.e. 8 MiB and multithreading from 16 MiB at the default window. Smaller
- * sections finish large files faster at a slight cost in compression ratio.
+ * `sectionSize`: target bytes per section when large inputs are split across
+ * the native brotli worker pool; inputs at least twice this size take the
+ * multithreaded path. Defaults to two windows (`2^(windowBits + 1)` bytes),
+ * i.e. 8 MiB and multithreading from 16 MiB at the default window. Smaller
+ * sections finish large files faster at a cost in compression ratio, and are
+ * clamped to the 64 KiB - 16 MiB range the encoder segments in.
  */
 export interface BrotliOptions {
   quality?: number
@@ -303,7 +304,9 @@ function validateAlgorithmOptions(
       assertIntegerInRange(windowBits, [10, 24], 'brotli windowBits')
     }
     if (sectionSize !== undefined) {
-      // Upper bound: the native module takes the size as a u32.
+      // Upper bound: the native module takes the size as a u32. It clamps into
+      // the 64 KiB - 16 MiB range the encoder segments in, so anything
+      // positive is accepted here.
       assertIntegerInRange(sectionSize, [1, 4294967295], 'brotli sectionSize')
     }
     return
