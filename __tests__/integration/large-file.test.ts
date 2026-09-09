@@ -16,11 +16,11 @@ describe.runIf(process.env.COMPRESSION_TEST_LARGE === '1')('large single asset',
     expect(payload.byteLength).toBeGreaterThanOrEqual(100 * 1024 * 1024)
 
     const [gz, zst] = await compressBuffers(
+      [{ fileName: 'huge.js', data: payload }],
       [
-        { fileName: 'huge.js', algorithm: 'gzip', level: 6 },
-        { fileName: 'huge.js', algorithm: 'zstd', level: 3 },
+        { algorithm: 'gzip', level: 6 },
+        { algorithm: 'zstd', level: 3 },
       ],
-      [payload, payload],
     )
 
     expect(gz?.error).toBeUndefined()

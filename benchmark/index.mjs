@@ -30,15 +30,11 @@ const gzipAsync = promisify(zlib.gzip)
 const brotliAsync = promisify(zlib.brotliCompress)
 const zstdAsync = zlib.zstdCompress ? promisify(zlib.zstdCompress) : null
 
-async function runNative(files, tasks) {
+async function runNative(files, algorithms) {
   const started = performance.now()
   const results = await compressBuffers(
-    tasks.map(({ fileIndex, algorithm, level }) => ({
-      fileName: files[fileIndex].name,
-      algorithm,
-      level,
-    })),
-    tasks.map(({ fileIndex }) => files[fileIndex].data),
+    files.map(({ name, data }) => ({ fileName: name, data })),
+    algorithms,
   )
   const elapsed = performance.now() - started
   for (const result of results) {
@@ -90,7 +86,7 @@ console.log(
 const rows = []
 for (const scenario of scenarios) {
   const tasks = makeTasks(files, scenario.algorithms)
-  const native = await runNative(files, tasks)
+  const native = await runNative(files, scenario.algorithms)
   const js = await runNodeZlib(files, tasks)
   rows.push({
     label: scenario.label,

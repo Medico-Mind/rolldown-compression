@@ -101,24 +101,21 @@ impl Display for Algorithm {
 /// `window_bits` and `section_size` are only used by brotli and ignored by
 /// other algorithms.
 ///
-/// `state` carries the reusable per-worker scratch state; see [`CompressState`].
-///
-/// Takes ownership of the input so brotli's multithreaded path can share it
-/// across worker threads without copying; it is dropped as soon as
-/// compression finishes.
+/// Borrows the input for the duration of compression, including brotli's
+/// scoped parallel work. The scheduler owns the source allocation.
 #[hotpath::measure]
 pub fn compress(
     algorithm: Algorithm,
     level: u32,
     window_bits: Option<u32>,
     section_size: Option<u32>,
-    input: InputBuffer,
+    input: &[u8],
 ) -> Result<Vec<u8>, Error> {
     algorithm.validate_level(level)?;
     let mut output = match algorithm {
-        Algorithm::Gzip => inner_gzip::compress(level, input.as_ref()),
+        Algorithm::Gzip => inner_gzip::compress(level, input),
         Algorithm::Brotli => inner_brotli::compress(level, window_bits, section_size, input),
-        Algorithm::Zstd => inner_zstd::compress(level, input.as_ref()),
+        Algorithm::Zstd => inner_zstd::compress(level, input),
     }?;
     // Output buffers are sized for the worst case, so compressible input
     // leaves most of the capacity unused; results are held until the JS side
@@ -134,9 +131,7 @@ mod tests {
 
     const ALGORITHMS: [Algorithm; 3] = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
 
-    /// Shadows [`super::compress`] with a fresh [`CompressState`] per call, the
-    /// one-shot equivalent of what the scheduler reuses across a worker's
-    /// items. Shared with the `inner_*` submodules' own test modules.
+    /// Accept owned fixtures for the compression tests and submodule tests.
     pub(super) fn compress(
         algorithm: Algorithm,
         level: u32,
@@ -144,7 +139,7 @@ mod tests {
         section_size: Option<u32>,
         input: InputBuffer,
     ) -> Result<Vec<u8>, Error> {
-        super::compress(algorithm, level, window_bits, section_size, input)
+        super::compress(algorithm, level, window_bits, section_size, &input)
     }
 
     /// Shared with the `inner_*` submodules' own test modules.

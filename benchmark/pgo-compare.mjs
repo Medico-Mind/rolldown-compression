@@ -14,7 +14,7 @@ import { createRequire } from 'node:module'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { makeFixtures, makeTasks, scenarios } from './fixtures.mjs'
+import { makeFixtures, scenarios } from './fixtures.mjs'
 
 const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -50,15 +50,11 @@ console.log(
 console.log(`baseline: ${path.relative(root, baselinePath)}`)
 console.log(`optimized: ${path.relative(root, pgoPath)}\n`)
 
-async function timeOnce(compressBuffers, files, tasks) {
+async function timeOnce(compressBuffers, files, algorithms) {
   const started = performance.now()
   const results = await compressBuffers(
-    tasks.map(({ fileIndex, algorithm, level }) => ({
-      fileName: files[fileIndex].name,
-      algorithm,
-      level,
-    })),
-    tasks.map(({ fileIndex }) => files[fileIndex].data),
+    files.map(({ name, data }) => ({ fileName: name, data })),
+    algorithms,
   )
   const elapsed = performance.now() - started
   for (const result of results) {
@@ -71,13 +67,13 @@ const median = (values) => values.toSorted((a, b) => a - b)[Math.floor(values.le
 
 const rows = []
 for (const scenario of scenarios) {
-  const tasks = makeTasks(files, scenario.algorithms)
   const samples = bindings.map(() => [])
   // Warm up both bindings (JIT, thread pools, page cache), then interleave.
-  for (const binding of bindings) await timeOnce(binding.compressBuffers, files, tasks)
+  for (const binding of bindings)
+    await timeOnce(binding.compressBuffers, files, scenario.algorithms)
   for (let iteration = 0; iteration < ITERATIONS; iteration++) {
     for (const [index, binding] of bindings.entries()) {
-      samples[index].push(await timeOnce(binding.compressBuffers, files, tasks))
+      samples[index].push(await timeOnce(binding.compressBuffers, files, scenario.algorithms))
     }
   }
   rows.push({

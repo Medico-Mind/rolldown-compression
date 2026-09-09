@@ -7,14 +7,14 @@
  */
 import { createRequire } from 'node:module'
 
-import type { BatchOptions, CompressResult, CompressTask } from '../index.js'
+import type { BatchOptions, CompressAlgorithm, CompressFile, CompressResult } from '../index.js'
 
 const requireNative = createRequire(import.meta.url)
 
 type NativeModule = {
   compressBuffers: (
-    tasks: CompressTask[],
-    buffers: Buffer[],
+    files: CompressFile[],
+    algorithms: CompressAlgorithm[],
     options?: BatchOptions | undefined | null,
   ) => Promise<CompressResult[]>
 }
@@ -23,8 +23,9 @@ const native = requireNative('../index.js') as NativeModule
 
 /**
  * Compress a batch of buffers in the native rayon thread pool, off the JS
- * main thread. `tasks[i]` describes how to compress `buffers[i]`.
+ * main thread. Each file is passed once and compressed with every algorithm.
+ * Results follow file order, then algorithm order within each file.
  */
 export const compressBuffers = native.compressBuffers
 
-export type { BatchOptions, CompressResult, CompressTask }
+export type { BatchOptions, CompressAlgorithm, CompressFile, CompressResult }

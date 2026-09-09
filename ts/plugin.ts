@@ -26,7 +26,7 @@ import path from 'node:path'
 
 import type { Plugin } from 'rolldown'
 
-import { type CompressTask, compressBuffers } from './binding.js'
+import { type CompressFile, compressBuffers } from './binding.js'
 import {
   type CanonicalAlgorithm,
   COMPRESSED_EXTENSION_RE,
@@ -113,8 +113,6 @@ function formatBytes(bytes: number): string {
 }
 
 interface PendingArtifact {
-  task: CompressTask
-  buffer: Buffer
   sourceFileName: string
   outputFileName: string
 }
@@ -176,7 +174,7 @@ interface BatchRunnerInit {
 }
 
 /**
- * Shared batching core: queues per-algorithm tasks, flushes them to the
+ * Shared batching core: queues each file once, flushes the files to the
  * native module and hands successful results to `emit`. Only one batch of
  * source buffers is referenced at a time once a flush trigger is set.
  */
@@ -200,23 +198,30 @@ function createBatchRunner({
   const chunkSize =
     options.chunkSize > 0 ? options.chunkSize : options.stream ? STREAM_DEFAULT_CHUNK_SIZE : 0
 
+  const algorithms = options.algorithms.map(({ algorithm, level, windowBits, sectionSize }) => ({
+    algorithm,
+    level,
+    windowBits,
+    sectionSize,
+  }))
+  const batchOptions = {
+    concurrency: options.concurrency,
+    skipIfLargerOrEqual: options.skipIfLargerOrEqual,
+  }
+
+  let pendingFiles: CompressFile[] = []
   let pending: PendingArtifact[] = []
   let pendingSourceBytes = 0
 
   const flush = async () => {
     if (pending.length === 0) return
     const batch = pending
+    const files = pendingFiles
     pending = []
+    pendingFiles = []
     pendingSourceBytes = 0
 
-    const results = await compressBuffers(
-      batch.map((artifact) => artifact.task),
-      batch.map((artifact) => artifact.buffer),
-      {
-        concurrency: options.concurrency,
-        skipIfLargerOrEqual: options.skipIfLargerOrEqual,
-      },
-    )
+    const results = await compressBuffers(files, algorithms, batchOptions)
 
     for (const [index, result] of results.entries()) {
       const artifact = batch[index]
@@ -280,18 +285,11 @@ function createBatchRunner({
       claimed.set(outputFileName, `${fileName} (${algorithm.algorithm})`)
 
       pending.push({
-        task: {
-          fileName,
-          algorithm: algorithm.algorithm,
-          level: algorithm.level,
-          windowBits: algorithm.windowBits,
-          sectionSize: algorithm.sectionSize,
-        },
-        buffer,
         sourceFileName: fileName,
         outputFileName,
       })
     }
+    pendingFiles.push({ fileName, data: buffer })
     processedSources.add(fileName)
 
     pendingSourceBytes += buffer.byteLength

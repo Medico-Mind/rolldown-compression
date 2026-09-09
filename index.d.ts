@@ -11,39 +11,8 @@ export interface BatchOptions {
   skipIfLargerOrEqual?: boolean
 }
 
-/**
- * Compress a batch of buffers off the JS main thread.
- *
- * `tasks[i]` describes how to compress `buffers[i]`. Algorithm names and
- * levels are validated synchronously so misconfiguration fails fast;
- * I/O-shaped failures during compression are reported per task via
- * [`CompressResult::error`].
- */
-export declare function compressBuffers(tasks: Array<CompressTask>, buffers: Array<Buffer>, options?: BatchOptions | undefined | null): Promise<Array<CompressResult>>
-
-/** Outcome of a single task within a batch. */
-export interface CompressResult {
-  fileName: string
-  algorithm: string
-  /** Compressed bytes. Empty when `skipped` is true or `error` is set. */
-  data: Buffer
-  originalSize: number
-  compressedSize: number
-  /**
-   * True when compression would not shrink the input and
-   * `skipIfLargerOrEqual` was requested.
-   */
-  skipped: boolean
-  /** Per-task failure. A failed task never aborts the rest of the batch. */
-  error?: string
-}
-
-/**
- * One compression task: pairs with the buffer at the same index in the
- * `buffers` argument of [`compress_buffers`].
- */
-export interface CompressTask {
-  fileName: string
+/** Algorithm settings applied to every file in a batch. */
+export interface CompressAlgorithm {
   /** Canonical algorithm name: "gzip" | "brotli" | "zstd". */
   algorithm: string
   /**
@@ -65,4 +34,39 @@ export interface CompressTask {
    * outside that range are clamped to it.
    */
   sectionSize?: number
+}
+
+/**
+ * Compress a batch of buffers off the JS main thread.
+ *
+ * Each file carries one buffer; algorithm settings are shared by all files.
+ * Results follow file order, then algorithm order within each file. Empty
+ * files or algorithms arrays produce no results. Algorithm names and
+ * levels are validated synchronously so misconfiguration fails fast;
+ * I/O-shaped failures during compression are reported per task via
+ * [`CompressResult::error`].
+ */
+export declare function compressBuffers(files: Array<CompressFile>, algorithms: Array<CompressAlgorithm>, options?: BatchOptions | undefined | null): Promise<Array<CompressResult>>
+
+/** One source file, passed once regardless of the number of algorithms. */
+export interface CompressFile {
+  fileName: string
+  data: Buffer
+}
+
+/** Outcome of a single task within a batch. */
+export interface CompressResult {
+  fileName: string
+  algorithm: string
+  /** Compressed bytes. Empty when `skipped` is true or `error` is set. */
+  data: Buffer
+  originalSize: number
+  compressedSize: number
+  /**
+   * True when compression would not shrink the input and
+   * `skipIfLargerOrEqual` was requested.
+   */
+  skipped: boolean
+  /** Per-task failure. A failed task never aborts the rest of the batch. */
+  error?: string
 }

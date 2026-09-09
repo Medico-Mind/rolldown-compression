@@ -24,16 +24,22 @@ mod binding {
     use napi::bindgen_prelude::*;
     use napi_derive::napi;
     use rayon::prelude::*;
+    use std::sync::Arc;
 
     use crate::compress::{Algorithm, validate_section_size, validate_window_bits};
     use crate::error::Error as CompressionError;
     use crate::scheduler::{BatchItem, BatchOutcome, run_batch};
 
-    /// One compression task: pairs with the buffer at the same index in the
-    /// `buffers` argument of [`compress_buffers`].
+    /// One source file, passed once regardless of the number of algorithms.
     #[napi(object)]
-    pub struct CompressTask {
+    pub struct CompressFile {
         pub file_name: String,
+        pub data: Buffer,
+    }
+
+    /// Algorithm settings applied to every file in a batch.
+    #[napi(object)]
+    pub struct CompressAlgorithm {
         /// Canonical algorithm name: "gzip" | "brotli" | "zstd".
         pub algorithm: String,
         /// Compression level; algorithm default when omitted
@@ -79,8 +85,7 @@ mod binding {
         pub error: Option<String>,
     }
 
-    struct ParsedTask {
-        file_name: String,
+    struct ParsedAlgorithm {
         algorithm: Algorithm,
         level: u32,
         window_bits: Option<u32>,
@@ -88,8 +93,8 @@ mod binding {
     }
 
     pub struct CompressWorker {
-        tasks: Vec<ParsedTask>,
-        buffers: Vec<Buffer>,
+        files: Vec<CompressFile>,
+        algorithms: Vec<ParsedAlgorithm>,
         skip_if_larger_or_equal: bool,
     }
 
@@ -106,32 +111,32 @@ mod binding {
         type JsValue = Vec<CompressResult>;
 
         fn compute(&mut self) -> Result<Self::Output> {
-            let tasks = std::mem::take(&mut self.tasks);
-            let buffers = std::mem::take(&mut self.buffers);
+            let files = std::mem::take(&mut self.files);
+            let algorithms = &self.algorithms;
             let skip_if_larger_or_equal = self.skip_if_larger_or_equal;
 
-            // Each buffer is moved into its item so the scheduler drops the
-            // reference to the JS-side allocation as soon as that item is
-            // compressed, instead of pinning every input until the batch
-            // resolves on the event loop. That consumes the input, so the
-            // reporting metadata is split off here.
+            // Expand file × algorithm on a worker thread. Only Arc handles
+            // are cloned: every task reads the same source allocation, which
+            // is released when the last algorithm for that file finishes.
             let (metadata, items): (Vec<_>, Vec<BatchItem>) =
                 hotpath::measure_block!("CompressWorker::split_tasks", {
-                    tasks
+                    files
                         .into_par_iter()
-                        .zip(buffers)
-                        .map(|(task, buffer)| {
-                            let original_size = buffer.len() as u32;
-                            (
-                                (task.file_name, task.algorithm, original_size),
-                                BatchItem {
-                                    algorithm: task.algorithm,
-                                    level: task.level,
-                                    window_bits: task.window_bits,
-                                    section_size: task.section_size,
-                                    input: buffer,
-                                },
-                            )
+                        .flat_map_iter(|file| {
+                            let original_size = file.data.len() as u32;
+                            let input = Arc::new(file.data);
+                            algorithms.iter().map(move |config| {
+                                (
+                                    (file.file_name.clone(), config.algorithm, original_size),
+                                    BatchItem {
+                                        algorithm: config.algorithm,
+                                        level: config.level,
+                                        window_bits: config.window_bits,
+                                        section_size: config.section_size,
+                                        input: Arc::clone(&input),
+                                    },
+                                )
+                            })
                         })
                         .unzip()
                 });
@@ -220,7 +225,9 @@ mod binding {
 
     /// Compress a batch of buffers off the JS main thread.
     ///
-    /// `tasks[i]` describes how to compress `buffers[i]`. Algorithm names and
+    /// Each file carries one buffer; algorithm settings are shared by all files.
+    /// Results follow file order, then algorithm order within each file. Empty
+    /// files or algorithms arrays produce no results. Algorithm names and
     /// levels are validated synchronously so misconfiguration fails fast;
     /// I/O-shaped failures during compression are reported per task via
     /// [`CompressResult::error`].
@@ -228,45 +235,44 @@ mod binding {
     #[napi]
     pub fn compress_buffers(
         env: Env,
-        tasks: Vec<CompressTask>,
-        buffers: Vec<Buffer>,
+        files: Vec<CompressFile>,
+        algorithms: Vec<CompressAlgorithm>,
         options: Option<BatchOptions>,
     ) -> Result<AsyncTask<CompressWorker>> {
         ensure_profiling(&env);
 
-        if tasks.len() != buffers.len() {
-            return Err(CompressionError::BatchLengthMismatch {
-                tasks: tasks.len(),
-                buffers: buffers.len(),
-            }
-            .into());
+        if files
+            .len()
+            .checked_mul(algorithms.len())
+            .is_none_or(|count| count > u32::MAX as usize)
+        {
+            return Err(CompressionError::BatchTooLarge.into());
         }
 
-        for buffer in &buffers {
-            if buffer.len() > u32::MAX as usize {
+        for file in &files {
+            if file.data.len() > u32::MAX as usize {
                 return Err(CompressionError::BufferTooLarge.into());
             }
         }
 
-        let mut parsed = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            let algorithm = task.algorithm.parse::<Algorithm>()?;
-            let level = task.level.unwrap_or_else(|| algorithm.default_level());
+        let mut parsed = Vec::with_capacity(algorithms.len());
+        for config in algorithms {
+            let algorithm = config.algorithm.parse::<Algorithm>()?;
+            let level = config.level.unwrap_or_else(|| algorithm.default_level());
             algorithm.validate_level(level)?;
             if algorithm == Algorithm::Brotli {
-                if let Some(window_bits) = task.window_bits {
+                if let Some(window_bits) = config.window_bits {
                     validate_window_bits(window_bits)?;
                 }
-                if let Some(section_size) = task.section_size {
+                if let Some(section_size) = config.section_size {
                     validate_section_size(section_size)?;
                 }
             }
-            parsed.push(ParsedTask {
-                file_name: task.file_name,
+            parsed.push(ParsedAlgorithm {
                 algorithm,
                 level,
-                window_bits: task.window_bits,
-                section_size: task.section_size,
+                window_bits: config.window_bits,
+                section_size: config.section_size,
             });
         }
 
@@ -284,8 +290,8 @@ mod binding {
         }
 
         Ok(AsyncTask::new(CompressWorker {
-            tasks: parsed,
-            buffers,
+            files,
+            algorithms: parsed,
             skip_if_larger_or_equal,
         }))
     }

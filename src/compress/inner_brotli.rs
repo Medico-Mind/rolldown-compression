@@ -9,7 +9,6 @@ use crate::error::Error;
 
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
-use super::InputBuffer;
 use mbrotli::compressor::parallel::{
     BatchConfig, ParallelCompressor, ParallelConfig, SegmentSize, TaskCount,
 };
@@ -63,7 +62,7 @@ pub fn compress(
     level: u32,
     window_bits: Option<u32>,
     section_size: Option<u32>,
-    input: InputBuffer,
+    input: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let window_bits = window_bits.unwrap_or(BROTLI_DEFAULT_WINDOW_BITS);
     validate_window_bits(window_bits)?;
@@ -105,9 +104,9 @@ pub fn compress(
     // The threshold follows the clamped segment, so the size that decides
     // whether to split is the same one that decides how.
     if input.len() < BROTLI_MIN_SECTIONS * segment.get() {
-        compress_single(config, input.as_ref())
+        compress_single(config, input)
     } else {
-        compress_parallel(config, segment, input.as_ref())
+        compress_parallel(config, segment, input)
     }
 }
 

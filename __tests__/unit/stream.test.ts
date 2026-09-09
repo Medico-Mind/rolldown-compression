@@ -144,10 +144,15 @@ describe('stream mode', () => {
     expect(await listFiles(dir)).toContain('file-4.js.gz')
   })
 
-  it('flushes by source bytes when chunkSize is positive', async () => {
+  it('passes each file once with multiple algorithms and a positive chunkSize', async () => {
     // Every file is larger than 1 byte, so each one flushes its own batch.
     const plugin = createCompressionPlugin(
-      resolveOptions({ stream: true, chunkSize: 1, algorithms: ['gzip'], logLevel: 'silent' }),
+      resolveOptions({
+        stream: true,
+        chunkSize: 1,
+        algorithms: ['gzip', 'brotli'],
+        logLevel: 'silent',
+      }),
     )
     const dir = await makeOutDir({
       'a.js': 'export const a = 1;\n'.repeat(100),
@@ -157,6 +162,17 @@ describe('stream mode', () => {
     await runWriteBundle(plugin, dir)
 
     expect(state.batchSizes).toEqual([1, 1, 1])
+    expect(await listFiles(dir)).toEqual([
+      'a.js',
+      'a.js.br',
+      'a.js.gz',
+      'b.js',
+      'b.js.br',
+      'b.js.gz',
+      'c.js',
+      'c.js.br',
+      'c.js.gz',
+    ])
   })
 
   it('respects threshold and never re-compresses compressed artifacts', async () => {

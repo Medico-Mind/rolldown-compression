@@ -5,6 +5,7 @@
 
 use std::cmp::Reverse;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -13,15 +14,14 @@ use crate::error::Error;
 
 /// A single unit of compression work.
 ///
-/// Owns its input so the scheduler can release each buffer as soon as its
-/// item finishes compressing instead of pinning the whole batch in memory
-/// until every item is done.
+/// Shares the source allocation with the other algorithms for its file.
+/// The last completed item releases it without waiting for the whole batch.
 pub struct BatchItem {
     pub algorithm: Algorithm,
     pub level: u32,
     pub window_bits: Option<u32>,
     pub section_size: Option<u32>,
-    pub input: InputBuffer,
+    pub input: Arc<InputBuffer>,
 }
 
 /// The outcome of one [`BatchItem`].
@@ -71,8 +71,7 @@ pub fn run_batch(mut items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Ve
     // `order[scheduled position] == input position`. Four bytes per item is
     // the whole cost of the reordering: both permutations below run in place,
     // so neither the items nor the outcomes are ever copied into a second
-    // buffer. A batch can never hold more than `u32::MAX` items — each one
-    // owns a live input buffer.
+    // buffer. The binding validates that the file × algorithm count fits u32.
     let mut order: Vec<u32> = (0..items.len() as u32).collect();
     order.sort_unstable_by_key(|&i| {
         let item = &items[i as usize];
@@ -129,16 +128,14 @@ fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
 fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
     let input_len = item.input.len();
     let algorithm = item.algorithm;
-    // `compress` consumes the input and drops it as soon as compression
-    // finishes, releasing the buffer per item instead of holding the whole
-    // batch until the last item ends.
+    // The item owns one shared reference; finishing this task releases it.
     let result = catch_unwind(AssertUnwindSafe(|| {
         compress(
             item.algorithm,
             item.level,
             item.window_bits,
             item.section_size,
-            item.input,
+            &item.input,
         )
     }))
     .unwrap_or(Err(Error::CompressionPanicked(algorithm)));
@@ -198,7 +195,7 @@ mod tests {
                     level: algorithm.default_level(),
                     window_bits: None,
                     section_size: None,
-                    input: input.clone(),
+                    input: Arc::new(input.clone()),
                 }
             })
             .collect()
@@ -244,7 +241,7 @@ mod tests {
                 level: 6,
                 window_bits: None,
                 section_size: None,
-                input: input.clone(),
+                input: Arc::new(input.clone()),
             }]
         };
         let outcomes = run_batch_on_pool(make_items(), 0, true);
@@ -314,7 +311,7 @@ mod tests {
                 level: algorithm.default_level(),
                 window_bits: None,
                 section_size: None,
-                input: vec![0u8; (i + 1) * 10],
+                input: Arc::new(vec![0u8; (i + 1) * 10]),
             })
             .collect();
 
@@ -378,6 +375,40 @@ mod tests {
     }
 
     #[test]
+    fn shared_input_survives_a_failed_task_and_is_released_after_the_last_task() {
+        let expected = text_fixture(1);
+        let input = Arc::new(expected.clone());
+        let weak = Arc::downgrade(&input);
+        let make_item = |algorithm, level| BatchItem {
+            algorithm,
+            level,
+            window_bits: None,
+            section_size: None,
+            input: Arc::clone(&input),
+        };
+        let failed = run_one(make_item(Algorithm::Brotli, 99), false);
+        assert!(failed.error.is_some());
+        let items = vec![
+            make_item(Algorithm::Gzip, 6),
+            make_item(Algorithm::Zstd, 3),
+            make_item(Algorithm::Brotli, 4),
+        ];
+        drop(input);
+        assert!(weak.upgrade().is_some());
+
+        let outcomes = run_batch_on_pool(items, 3, false);
+        assert!(weak.upgrade().is_none());
+        for (outcome, algorithm) in
+            outcomes
+                .iter()
+                .zip([Algorithm::Gzip, Algorithm::Zstd, Algorithm::Brotli])
+        {
+            assert!(outcome.error.is_none());
+            assert_eq!(decompress(algorithm, &outcome.data), expected);
+        }
+    }
+
+    #[test]
     fn single_failure_does_not_abort_batch() {
         let good = b"hello world hello world hello world".to_vec();
         let items = vec![
@@ -386,7 +417,7 @@ mod tests {
                 level: 6,
                 window_bits: None,
                 section_size: None,
-                input: good.clone(),
+                input: Arc::new(good.clone()),
             },
             BatchItem {
                 // Invalid level sneaks past FFI validation only in theory,
@@ -395,7 +426,7 @@ mod tests {
                 level: 99,
                 window_bits: None,
                 section_size: None,
-                input: good.clone(),
+                input: Arc::new(good.clone()),
             },
         ];
         let outcomes = run_batch_on_pool(items, 0, false);

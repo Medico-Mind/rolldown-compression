@@ -27,13 +27,10 @@ console.log(
   `training corpus: ${corpus.length} files, ${(totalBytes / 1024 / 1024).toFixed(2)} MB (${bindingPath})`,
 )
 
-const forFiles = (files, variants) =>
-  files.flatMap((file) =>
-    variants.map((variant) => ({
-      task: { fileName: file.name, ...variant },
-      data: file.data,
-    })),
-  )
+const forFiles = (files, algorithms) => ({
+  files: files.map(({ name, data }) => ({ fileName: name, data })),
+  algorithms,
+})
 
 const MB = 1024 * 1024
 const smallAndMedium = corpus.filter((file) => file.data.byteLength <= 128 * 1024)
@@ -118,16 +115,12 @@ const batches = [
 
 for (const batch of batches) {
   const started = performance.now()
-  const results = await compressBuffers(
-    batch.jobs.map((job) => job.task),
-    batch.jobs.map((job) => job.data),
-    batch.options,
-  )
+  const results = await compressBuffers(batch.jobs.files, batch.jobs.algorithms, batch.options)
   for (const result of results) {
     if (result.error) throw new Error(`${result.fileName}: ${result.error}`)
   }
   console.log(
-    `  ${batch.label}: ${batch.jobs.length} tasks in ${((performance.now() - started) / 1000).toFixed(2)}s`,
+    `  ${batch.label}: ${results.length} tasks in ${((performance.now() - started) / 1000).toFixed(2)}s`,
   )
 }
 

@@ -37,10 +37,9 @@ describe('event loop responsiveness', () => {
     // ~1.6 MB of incompressible-ish source per chunk; brotli quality 11 spends
     // roughly a second of CPU on the batch, far above the 250 ms floor below.
     const payload = Buffer.from(makeSource(20_000))
-    const tasks = Array.from({ length: 4 }, (_, index) => ({
+    const files = Array.from({ length: 4 }, (_, index) => ({
       fileName: `chunk-${index}.js`,
-      algorithm: 'brotli',
-      level: 11,
+      data: payload,
     }))
 
     let ticks = 0
@@ -55,10 +54,7 @@ describe('event loop responsiveness', () => {
 
     try {
       const started = performance.now()
-      const results = await compressBuffers(
-        tasks,
-        tasks.map(() => payload),
-      )
+      const results = await compressBuffers(files, [{ algorithm: 'brotli', level: 11 }])
       const elapsed = performance.now() - started
 
       for (const result of results) {

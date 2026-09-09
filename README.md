@@ -136,7 +136,7 @@ The size penalty depends entirely on how far apart your content's repetitions ar
 
 - The plugin hooks **`generateBundle`**, while all chunks and assets are still in memory — no filesystem round-trip. Eligible files (filter + threshold) are sent to the native module as **one batched FFI call per build**; results are emitted with `emitFile`.
 - Compression runs on a rayon thread pool inside the native module (`AsyncTask`), parallel across files *and* algorithms, scheduled most-expensive-first so one large brotli file can't stretch the batch tail. The JS event loop keeps ticking throughout (covered by a test).
-- Buffers cross the FFI boundary without base64/string round-trips, and the compression working set lives in native memory — a 500 MB asset does not pressure the JS heap.
+- Each file crosses the FFI boundary once as a buffer, with algorithm settings sent separately. Rust shares that source allocation across algorithms without copying the bytes. Buffers require no base64/string round-trips, and the compression working set lives in native memory — a 500 MB asset does not pressure the JS heap.
 - A failing task never aborts the batch: per-task errors are aggregated and fail the build with one message.
 - Already-compressed artifacts (`.gz`, `.br`, `.zst` — ours or pre-existing) are never re-compressed, so chaining plugin instances can't produce `app.js.gz.br`.
 - Artifact names are checked before anything is written: a name that escapes the output directory, collides with another artifact of the same build, or overwrites a file the build already owns fails the build instead of silently clobbering it.

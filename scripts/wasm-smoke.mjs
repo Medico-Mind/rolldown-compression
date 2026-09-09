@@ -12,15 +12,9 @@ import { createRequire } from 'node:module'
 const { compressBuffers } = createRequire(import.meta.url)('../index.js')
 
 const input = Buffer.from('export const value = 42;\n'.repeat(500))
-const tasks = ['gzip', 'brotli', 'zstd'].map((algorithm) => ({
-  fileName: `smoke.js.${algorithm}`,
-  algorithm,
-}))
-
-const results = await compressBuffers(
-  tasks,
-  tasks.map(() => input),
-)
+const algorithms = ['gzip', 'brotli', 'zstd'].map((algorithm) => ({ algorithm }))
+const results = await compressBuffers([{ fileName: 'smoke.js', data: input }], algorithms)
+assert.equal(results.length, algorithms.length)
 
 for (const result of results) {
   assert.ok(!result.error, `${result.algorithm} failed: ${result.error}`)

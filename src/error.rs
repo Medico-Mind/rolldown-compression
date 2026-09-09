@@ -19,8 +19,8 @@ pub enum Error {
     InvalidWindowBits(u32),
     #[error("invalid brotli sectionSize {0}: expected a positive number of bytes")]
     InvalidSectionSize(u32),
-    #[error("tasks and buffers must have the same length (got {tasks} tasks, {buffers} buffers)")]
-    BatchLengthMismatch { tasks: usize, buffers: usize },
+    #[error("batches with more than 2^32 - 1 compression results are not supported")]
+    BatchTooLarge,
     #[error("buffers larger than 4 GiB are not supported")]
     BufferTooLarge,
     #[error("gzip compression failed: {0}")]
@@ -46,7 +46,7 @@ impl From<Error> for NapiError {
             | Error::InvalidLevel { .. }
             | Error::InvalidWindowBits(_)
             | Error::InvalidSectionSize(_)
-            | Error::BatchLengthMismatch { .. }
+            | Error::BatchTooLarge
             | Error::BufferTooLarge => Status::InvalidArg,
             Error::Gzip(_)
             | Error::Zstd(_)
@@ -72,10 +72,7 @@ mod tests {
             Algorithm::Gzip.validate_level(10).unwrap_err(),
             crate::compress::validate_window_bits(9).unwrap_err(),
             crate::compress::validate_section_size(0).unwrap_err(),
-            Error::BatchLengthMismatch {
-                tasks: 1,
-                buffers: 0,
-            },
+            Error::BatchTooLarge,
             Error::BufferTooLarge,
         ];
         for error in errors {

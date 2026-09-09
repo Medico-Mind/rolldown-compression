@@ -88,14 +88,14 @@ describe('chunkSize batching', () => {
     expect(emitted.map((file) => file.fileName).sort()).toEqual(['a.js.gz', 'b.js.gz', 'c.json.gz'])
   })
 
-  it('keeps all algorithm variants of one file in the same batch', async () => {
+  it('passes each file once even with multiple algorithms', async () => {
     const plugin = createCompressionPlugin(
       resolveOptions({ algorithms: ['gzip', 'brotli'], chunkSize: 1, logLevel: 'silent' }),
     )
     const { emitted, done } = runGenerateBundle(plugin, makeBundle())
     await done
 
-    expect(state.batchSizes).toEqual([2, 2, 2])
+    expect(state.batchSizes).toEqual([1, 1, 1])
     expect(emitted).toHaveLength(6)
   })
 
