@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::compress::{Algorithm, InputBuffer, compress};
+use crate::compress::{Algorithm, Compressors, InputBuffer};
 use crate::error::Error;
 
 /// A single unit of compression work.
@@ -54,7 +54,7 @@ fn algorithm_rank(algorithm: Algorithm) -> u8 {
 /// Run every item of the batch in parallel and return outcomes in input order.
 ///
 /// Items are scheduled longest-job-first — brotli, then zstd, then gzip, and
-/// the largest input first inside each algorithm — and the outcomes are put
+/// the largest input first inside each configuration — and the outcomes are put
 /// back into input order before returning.
 ///
 /// Work runs on the caller's ambient rayon pool: the global one unless the
@@ -75,17 +75,51 @@ pub fn run_batch(mut items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Ve
     let mut order: Vec<u32> = (0..items.len() as u32).collect();
     order.sort_unstable_by_key(|&i| {
         let item = &items[i as usize];
-        (algorithm_rank(item.algorithm), Reverse(item.input.len()))
+        (
+            algorithm_rank(item.algorithm),
+            item.level,
+            item.window_bits,
+            item.section_size,
+            Reverse(item.input.len()),
+        )
     });
     gather_in_place(&mut items, &order);
 
-    let mut outcomes: Vec<BatchOutcome> = Vec::with_capacity(items.len());
+    // Each configuration owns a parallel file iterator and its reusable
+    // encoders. Let rayon keep multiple files in a partition so `map_with`
+    // can retain scratch allocations between them.
+    let mut groups: Vec<Vec<BatchItem>> = Vec::new();
+    for item in items {
+        if let Some(group) = groups.last_mut()
+            && let Some(last) = group.last()
+            && (
+                last.algorithm,
+                last.level,
+                last.window_bits,
+                last.section_size,
+            ) == (
+                item.algorithm,
+                item.level,
+                item.window_bits,
+                item.section_size,
+            )
+        {
+            group.push(item);
+        } else {
+            groups.push(vec![item]);
+        }
+    }
 
-    items
+    let mut outcomes: Vec<BatchOutcome> = groups
         .into_par_iter()
-        .with_max_len(1)
-        .map(|item| run_one(item, skip_if_larger_or_equal))
-        .collect_into_vec(&mut outcomes);
+        .flat_map(|items| {
+            items
+                .into_par_iter()
+                .map_with(Compressors::default(), |compressors, item| {
+                    run_one(compressors, item, skip_if_larger_or_equal)
+                })
+        })
+        .collect();
 
     // Outcomes come back in scheduled order; `order` says where each belongs.
     scatter_in_place(&mut outcomes, &mut order);
@@ -112,7 +146,7 @@ fn gather_in_place<T>(data: &mut [T], order: &[u32]) {
 /// Move every `data[i]` to index `order[i]`, the inverse of
 /// [`gather_in_place`]. `order` is used as scratch and left as the identity
 /// permutation.
-fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
+pub(crate) fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
     for i in 0..data.len() {
         // Each swap parks at least one element at its final index, so the
         // inner loop runs at most `len` times in total.
@@ -125,12 +159,16 @@ fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
 }
 
 #[hotpath::measure]
-fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
+fn run_one(
+    compressors: &mut Compressors,
+    item: BatchItem,
+    skip_if_larger_or_equal: bool,
+) -> BatchOutcome {
     let input_len = item.input.len();
     let algorithm = item.algorithm;
     // The item owns one shared reference; finishing this task releases it.
     let result = catch_unwind(AssertUnwindSafe(|| {
-        compress(
+        compressors.compress(
             item.algorithm,
             item.level,
             item.window_bits,
@@ -138,7 +176,11 @@ fn run_one(item: BatchItem, skip_if_larger_or_equal: bool) -> BatchOutcome {
             &item.input,
         )
     }))
-    .unwrap_or(Err(Error::CompressionPanicked(algorithm)));
+    .unwrap_or_else(|_| {
+        // A panicking encoder may contain an unfinished stream.
+        *compressors = Compressors::default();
+        Err(Error::CompressionPanicked(algorithm))
+    });
 
     match result {
         Ok(data) if skip_if_larger_or_equal && data.len() >= input_len => BatchOutcome {
@@ -386,7 +428,11 @@ mod tests {
             section_size: None,
             input: Arc::clone(&input),
         };
-        let failed = run_one(make_item(Algorithm::Brotli, 99), false);
+        let failed = run_one(
+            &mut Compressors::default(),
+            make_item(Algorithm::Brotli, 99),
+            false,
+        );
         assert!(failed.error.is_some());
         let items = vec![
             make_item(Algorithm::Gzip, 6),

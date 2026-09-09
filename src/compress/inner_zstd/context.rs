@@ -1,10 +1,8 @@
-use std::cell::RefCell;
-
-/// Reusable zstd compressor carried across the items a single rayon worker
+/// Reusable zstd compressor carried across the items a rayon partition
 /// handles.
 ///
 /// A zstd context at the levels used here owns tens of megabytes of match
-/// tables; keeping one per worker avoids reallocating them for every file.
+/// tables; retaining them in the partition avoids rebuilding them for each file.
 /// `i32::MIN` marks a fresh context whose level is not yet configured
 /// (validated levels are all above it).
 pub struct ZstdContext {
@@ -19,8 +17,4 @@ impl Default for ZstdContext {
             compressor: zstd::bulk::Compressor::default(),
         }
     }
-}
-
-thread_local! {
-    pub static CONTEXT: RefCell<ZstdContext> = Default::default();
 }

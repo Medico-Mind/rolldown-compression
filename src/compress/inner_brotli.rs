@@ -13,7 +13,6 @@ use mbrotli::compressor::parallel::{
     BatchConfig, ParallelCompressor, ParallelConfig, SegmentSize, TaskCount,
 };
 use mbrotli::{Compressor, EncoderConfig, Quality, Window};
-use std::cell::RefCell;
 use std::ops::RangeInclusive;
 
 /// Default brotli window size (log2), matching `BROTLI_DEFAULT_WINDOW`.
@@ -59,6 +58,7 @@ pub fn validate_section_size(section_size: u32) -> Result<(), Error> {
 /// decision that leaves the bytes alone, so a given input and set of options
 /// compress the same everywhere, as gzip and zstd already did.
 pub fn compress(
+    compressor: &mut Option<Compressor>,
     level: u32,
     window_bits: Option<u32>,
     section_size: Option<u32>,
@@ -104,7 +104,7 @@ pub fn compress(
     // The threshold follows the clamped segment, so the size that decides
     // whether to split is the same one that decides how.
     if input.len() < BROTLI_MIN_SECTIONS * segment.get() {
-        compress_single(config, input)
+        compress_single(compressor, config, input)
     } else {
         compress_parallel(config, segment, input)
     }
@@ -130,21 +130,6 @@ fn segment_size(section_size: usize) -> SegmentSize {
         .unwrap_or(SegmentSize::DEFAULT)
 }
 
-thread_local! {
-    /// The calling worker's serial encoder, reused across every file it takes.
-    ///
-    /// A `Compressor` exists to be reused: its second call at a given shape
-    /// allocates nothing the first already paid for, and a batch is overwhelmingly
-    /// files below [`parallel_threshold`] all landing here. Building one per file
-    /// instead threw that away and re-paid for brotli's hasher tables and ring
-    /// buffer every time.
-    ///
-    /// One per worker rather than one shared behind a lock: the encoder is
-    /// `&mut`-driven, so sharing would serialize the batch it is meant to
-    /// parallelize.
-    static COMPRESSOR: RefCell<Option<Compressor>> = const { RefCell::new(None) };
-}
-
 /// Compress as one uninterrupted stream on the calling thread.
 ///
 /// Splitting is not free under `mbrotli` the way it was under the previous
@@ -159,17 +144,19 @@ thread_local! {
 /// share a shape; `reconfigure` is transactional — it drops every trace of the
 /// previous stream while keeping whatever buffers still apply — so the output
 /// is what a fresh `Compressor` would have produced.
-fn compress_single(config: EncoderConfig, input: &[u8]) -> Result<Vec<u8>, Error> {
-    COMPRESSOR.with_borrow_mut(|slot| {
-        match slot {
-            Some(compressor) => compressor.reconfigure(config)?,
-            None => *slot = Some(Compressor::new(config)?),
+fn compress_single(
+    slot: &mut Option<Compressor>,
+    config: EncoderConfig,
+    input: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let compressor = match slot {
+        Some(compressor) => {
+            compressor.reconfigure(config)?;
+            compressor
         }
-        let compressor = slot
-            .as_mut()
-            .expect("compressor is present after the match above");
-        compressor.compress(input).map_err(Error::from)
-    })
+        None => slot.insert(Compressor::new(config)?),
+    };
+    compressor.compress(input).map_err(Error::from)
 }
 
 /// Compress by cutting `input` into `segment`-sized sections and spreading
@@ -567,7 +554,7 @@ mod tests {
 
     #[test]
     fn reused_compressor_matches_a_fresh_one_across_shape_changes() {
-        // The thread-local encoder is reconfigured, not rebuilt, so a batch
+        // The partition-owned encoder is reconfigured, not rebuilt, so a batch
         // walks one `Compressor` through every quality and window it meets.
         // If any state survived a reconfigure the output would drift from
         // what a fresh encoder produces — silently, and only for whichever
@@ -589,6 +576,7 @@ mod tests {
             (11, 24, 90_000),
             (5, 10, 0),
         ];
+        let mut compressor = None;
         for _ in 0..2 {
             for (level, window_bits, len) in shapes {
                 let input: Vec<u8> = b"export const value = 42; // padding padding\n"
@@ -602,7 +590,8 @@ mod tests {
                     .expect("compressor")
                     .compress(input.as_ref())
                     .expect("compress");
-                let reused = compress_single(cfg, input.as_ref()).expect("compress");
+                let reused =
+                    compress_single(&mut compressor, cfg, input.as_ref()).expect("compress");
                 assert_eq!(
                     reused, fresh,
                     "reused encoder drifted at quality {level}, window {window_bits}, len {len}"
@@ -614,28 +603,21 @@ mod tests {
 
     #[test]
     fn every_worker_gets_its_own_compressor() {
-        // The cache is thread-local and the batch is a rayon fan-out, so the
-        // same encoder must not be reached from two workers at once, and a
-        // worker that steals a serial file while another compression is in
-        // flight must not find the RefCell already borrowed.
+        // Each rayon partition owns its encoder, including when a worker
+        // steals another partition while parallel compression is in flight.
         use rayon::prelude::*;
 
         let jobs = 32 * rayon::current_num_threads();
         let outputs: Vec<_> = (0..jobs)
             .into_par_iter()
-            .map(|i| {
+            .map_with(crate::compress::Compressors::default(), |compressors, i| {
                 // Vary the shape per job so workers keep reconfiguring.
                 let level = (i % 12) as u32;
                 let window_bits = 10 + (i % 15) as u32;
                 let input = b"function chunk(a, b) { return a + b; }\n".repeat(100 + i % 500);
-                let compressed = compress_any(
-                    Algorithm::Brotli,
-                    level,
-                    Some(window_bits),
-                    None,
-                    input.clone(),
-                )
-                .expect("compress");
+                let compressed = compressors
+                    .compress(Algorithm::Brotli, level, Some(window_bits), None, &input)
+                    .expect("compress");
                 assert_eq!(decompress(Algorithm::Brotli, &compressed), input);
                 (level, window_bits, input, compressed)
             })
@@ -666,7 +648,7 @@ mod tests {
         let input = b"export const value = 42; // padding padding\n".repeat(20_000);
         assert!(input.len() < DEFAULT_SECTION_SIZE);
         assert_eq!(
-            compress_single(config(5, 22), input.as_ref()).expect("serial"),
+            compress_single(&mut None, config(5, 22), input.as_ref()).expect("serial"),
             compress_parallel(
                 config(5, 22),
                 segment_size(DEFAULT_SECTION_SIZE),

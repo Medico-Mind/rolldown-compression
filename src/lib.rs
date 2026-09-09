@@ -28,7 +28,7 @@ mod binding {
 
     use crate::compress::{Algorithm, validate_section_size, validate_window_bits};
     use crate::error::Error as CompressionError;
-    use crate::scheduler::{BatchItem, BatchOutcome, run_batch};
+    use crate::scheduler::{BatchItem, BatchOutcome, run_batch, scatter_in_place};
 
     /// One source file, passed once regardless of the number of algorithms.
     #[napi(object)]
@@ -115,35 +115,38 @@ mod binding {
             let algorithms = &self.algorithms;
             let skip_if_larger_or_equal = self.skip_if_larger_or_equal;
 
-            // Expand file × algorithm on a worker thread. Only Arc handles
-            // are cloned: every task reads the same source allocation, which
-            // is released when the last algorithm for that file finishes.
+            let file_count = files.len();
+            let algorithm_count = algorithms.len();
+            // Share each source allocation across the algorithm groups.
+            let files: Vec<_> = files
+                .into_iter()
+                .map(|file| (file.file_name, Arc::new(file.data)))
+                .collect();
             let (metadata, items): (Vec<_>, Vec<BatchItem>) =
                 hotpath::measure_block!("CompressWorker::split_tasks", {
-                    files
-                        .into_par_iter()
-                        .flat_map_iter(|file| {
-                            let original_size = file.data.len() as u32;
-                            let input = Arc::new(file.data);
-                            algorithms.iter().map(move |config| {
+                    algorithms
+                        .par_iter()
+                        .flat_map_iter(|config| {
+                            files.iter().map(move |(file_name, input)| {
                                 (
-                                    (file.file_name.clone(), config.algorithm, original_size),
+                                    (file_name.clone(), config.algorithm, input.len() as u32),
                                     BatchItem {
                                         algorithm: config.algorithm,
                                         level: config.level,
                                         window_bits: config.window_bits,
                                         section_size: config.section_size,
-                                        input: Arc::clone(&input),
+                                        input: Arc::clone(input),
                                     },
                                 )
                             })
                         })
                         .unzip()
                 });
+            drop(files);
 
             let outcomes = run_batch(items, skip_if_larger_or_equal);
 
-            Ok(metadata
+            let mut output: Vec<_> = metadata
                 .into_par_iter()
                 .zip(outcomes)
                 .map(
@@ -154,7 +157,15 @@ mod binding {
                         outcome,
                     },
                 )
-                .collect())
+                .collect();
+            // Keep the public file-then-algorithm result order.
+            let mut order: Vec<u32> = (0..algorithm_count)
+                .flat_map(|algorithm| {
+                    (0..file_count).map(move |file| (file * algorithm_count + algorithm) as u32)
+                })
+                .collect();
+            scatter_in_place(&mut output, &mut order);
+            Ok(output)
         }
 
         fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {

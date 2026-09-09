@@ -96,6 +96,47 @@ impl Display for Algorithm {
     }
 }
 
+/// Scratch encoders owned by one rayon iterator partition.
+#[derive(Default)]
+pub(crate) struct Compressors {
+    brotli: Option<mbrotli::Compressor>,
+    zstd: Option<inner_zstd::ZstdContext>,
+}
+
+// Rayon clones the state when splitting `map_with`. Encoded streams never
+// depend on the scratch buffers, so each partition starts with empty caches.
+impl Clone for Compressors {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl Compressors {
+    #[hotpath::measure]
+    pub(crate) fn compress(
+        &mut self,
+        algorithm: Algorithm,
+        level: u32,
+        window_bits: Option<u32>,
+        section_size: Option<u32>,
+        input: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        algorithm.validate_level(level)?;
+        let mut output = match algorithm {
+            Algorithm::Gzip => inner_gzip::compress(level, input),
+            Algorithm::Brotli => {
+                inner_brotli::compress(&mut self.brotli, level, window_bits, section_size, input)
+            }
+            Algorithm::Zstd => {
+                inner_zstd::compress(self.zstd.get_or_insert_with(Default::default), level, input)
+            }
+        }?;
+        // Results remain alive until JS drains the batch; release unused capacity.
+        output.shrink_to_fit();
+        Ok(output)
+    }
+}
+
 /// Compress `input` with the given algorithm and level.
 ///
 /// `window_bits` and `section_size` are only used by brotli and ignored by
@@ -111,17 +152,7 @@ pub fn compress(
     section_size: Option<u32>,
     input: &[u8],
 ) -> Result<Vec<u8>, Error> {
-    algorithm.validate_level(level)?;
-    let mut output = match algorithm {
-        Algorithm::Gzip => inner_gzip::compress(level, input),
-        Algorithm::Brotli => inner_brotli::compress(level, window_bits, section_size, input),
-        Algorithm::Zstd => inner_zstd::compress(level, input),
-    }?;
-    // Output buffers are sized for the worst case, so compressible input
-    // leaves most of the capacity unused; results are held until the JS side
-    // drains the batch, so hand back right-sized buffers.
-    output.shrink_to_fit();
-    Ok(output)
+    Compressors::default().compress(algorithm, level, window_bits, section_size, input)
 }
 
 #[cfg(test)]
