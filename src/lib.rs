@@ -28,7 +28,7 @@ mod binding {
 
     use crate::compress::{Algorithm, validate_section_size, validate_window_bits};
     use crate::error::Error as CompressionError;
-    use crate::scheduler::{BatchItem, BatchOutcome, run_batch, scatter_in_place};
+    use crate::scheduler::{BatchAlgorithm, BatchOutcome, run_batch};
 
     /// One source file, passed once regardless of the number of algorithms.
     #[napi(object)]
@@ -85,16 +85,9 @@ mod binding {
         pub error: Option<String>,
     }
 
-    struct ParsedAlgorithm {
-        algorithm: Algorithm,
-        level: u32,
-        window_bits: Option<u32>,
-        section_size: Option<u32>,
-    }
-
     pub struct CompressWorker {
         files: Vec<CompressFile>,
-        algorithms: Vec<ParsedAlgorithm>,
+        algorithms: Vec<BatchAlgorithm>,
         skip_if_larger_or_equal: bool,
     }
 
@@ -115,57 +108,30 @@ mod binding {
             let algorithms = &self.algorithms;
             let skip_if_larger_or_equal = self.skip_if_larger_or_equal;
 
-            let file_count = files.len();
-            let algorithm_count = algorithms.len();
-            // Share each source allocation across the algorithm groups.
-            let files: Vec<_> = files
+            let (metadata, inputs): (Vec<_>, Vec<_>) = files
                 .into_iter()
-                .map(|file| (file.file_name, Arc::new(file.data)))
-                .collect();
-            let (metadata, items): (Vec<_>, Vec<BatchItem>) =
-                hotpath::measure_block!("CompressWorker::split_tasks", {
-                    algorithms
-                        .par_iter()
-                        .flat_map_iter(|config| {
-                            files.iter().map(move |(file_name, input)| {
-                                (
-                                    (file_name.clone(), config.algorithm, input.len() as u32),
-                                    BatchItem {
-                                        algorithm: config.algorithm,
-                                        level: config.level,
-                                        window_bits: config.window_bits,
-                                        section_size: config.section_size,
-                                        input: Arc::clone(input),
-                                    },
-                                )
-                            })
-                        })
-                        .unzip()
-                });
-            drop(files);
-
-            let outcomes = run_batch(items, skip_if_larger_or_equal);
-
-            let mut output: Vec<_> = metadata
-                .into_par_iter()
-                .zip(outcomes)
-                .map(
-                    |((file_name, algorithm, original_size), outcome)| WorkerOutcome {
-                        file_name,
-                        algorithm,
-                        original_size,
-                        outcome,
-                    },
-                )
-                .collect();
-            // Keep the public file-then-algorithm result order.
-            let mut order: Vec<u32> = (0..algorithm_count)
-                .flat_map(|algorithm| {
-                    (0..file_count).map(move |file| (file * algorithm_count + algorithm) as u32)
+                .map(|file| {
+                    (
+                        (file.file_name, file.data.len() as u32),
+                        Arc::new(file.data),
+                    )
                 })
-                .collect();
-            scatter_in_place(&mut output, &mut order);
-            Ok(output)
+                .unzip();
+            let outcomes = run_batch(inputs, algorithms, skip_if_larger_or_equal);
+
+            Ok(outcomes
+                .into_par_iter()
+                .enumerate()
+                .map(|(index, outcome)| {
+                    let (file_name, original_size) = &metadata[index / algorithms.len()];
+                    WorkerOutcome {
+                        file_name: file_name.clone(),
+                        algorithm: algorithms[index % algorithms.len()].algorithm,
+                        original_size: *original_size,
+                        outcome,
+                    }
+                })
+                .collect())
         }
 
         fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -279,7 +245,7 @@ mod binding {
                     validate_section_size(section_size)?;
                 }
             }
-            parsed.push(ParsedAlgorithm {
+            parsed.push(BatchAlgorithm {
                 algorithm,
                 level,
                 window_bits: config.window_bits,

@@ -12,19 +12,26 @@ use rayon::prelude::*;
 use crate::compress::{Algorithm, Compressors, InputBuffer};
 use crate::error::Error;
 
-/// A single unit of compression work.
-///
-/// Shares the source allocation with the other algorithms for its file.
-/// The last completed item releases it without waiting for the whole batch.
-pub struct BatchItem {
+/// Algorithm settings shared by every file in a batch.
+#[derive(Clone, Copy)]
+pub struct BatchAlgorithm {
     pub algorithm: Algorithm,
     pub level: u32,
     pub window_bits: Option<u32>,
     pub section_size: Option<u32>,
-    pub input: Arc<InputBuffer>,
 }
 
-/// The outcome of one [`BatchItem`].
+struct BatchFile {
+    result_index: u32,
+    input: Arc<InputBuffer>,
+}
+
+struct BatchGroup<'a> {
+    config: &'a BatchAlgorithm,
+    files: Vec<BatchFile>,
+}
+
+/// The outcome of compressing one file with one algorithm configuration.
 ///
 /// Exactly one of the following holds:
 /// - `error` is `Some`: the task failed, `data` is empty and `skipped` is false;
@@ -51,102 +58,76 @@ fn algorithm_rank(algorithm: Algorithm) -> u8 {
     }
 }
 
-/// Run every item of the batch in parallel and return outcomes in input order.
-///
-/// Items are scheduled longest-job-first — brotli, then zstd, then gzip, and
-/// the largest input first inside each configuration — and the outcomes are put
-/// back into input order before returning.
-///
-/// Work runs on the caller's ambient rayon pool: the global one unless the
-/// caller wraps this in [`rayon::ThreadPool::install`] to pin the batch to a
-/// dedicated pool.
-///
-/// * `skip_if_larger_or_equal` — mark items whose compressed size would be
-///   `>=` the input size as skipped instead of returning the bloated output.
-///
-/// A failure (or panic) of a single item never aborts the batch; it is
-/// reported through [`BatchOutcome::error`].
+/// Sort algorithms and files once, then build the groups directly.
+/// Each task owns a source handle, so the last task for a file releases it.
 #[hotpath::measure]
-pub fn run_batch(mut items: Vec<BatchItem>, skip_if_larger_or_equal: bool) -> Vec<BatchOutcome> {
-    // `order[scheduled position] == input position`. Four bytes per item is
-    // the whole cost of the reordering: both permutations below run in place,
-    // so neither the items nor the outcomes are ever copied into a second
-    // buffer. The binding validates that the file × algorithm count fits u32.
-    let mut order: Vec<u32> = (0..items.len() as u32).collect();
-    order.sort_unstable_by_key(|&i| {
-        let item = &items[i as usize];
-        (
-            algorithm_rank(item.algorithm),
-            item.level,
-            item.window_bits,
-            item.section_size,
-            Reverse(item.input.len()),
-        )
-    });
-    gather_in_place(&mut items, &order);
+fn prepare_groups<'a>(
+    inputs: Vec<Arc<InputBuffer>>,
+    algorithms: &'a [BatchAlgorithm],
+) -> Vec<BatchGroup<'a>> {
+    let mut files: Vec<_> = inputs.into_iter().enumerate().collect();
+    files.sort_unstable_by_key(|(index, input)| (Reverse(input.len()), *index));
+    let mut configs: Vec<_> = algorithms.iter().enumerate().collect();
+    configs.sort_unstable_by_key(|(index, config)| (algorithm_rank(config.algorithm), *index));
 
-    // Each configuration owns a parallel file iterator and its reusable
-    // encoders. Let rayon keep multiple files in a partition so `map_with`
-    // can retain scratch allocations between them.
-    let mut groups: Vec<Vec<BatchItem>> = Vec::new();
-    for item in items {
-        if let Some(group) = groups.last_mut()
-            && let Some(last) = group.last()
-            && (
-                last.algorithm,
-                last.level,
-                last.window_bits,
-                last.section_size,
-            ) == (
-                item.algorithm,
-                item.level,
-                item.window_bits,
-                item.section_size,
-            )
-        {
-            group.push(item);
-        } else {
-            groups.push(vec![item]);
-        }
-    }
-
-    let mut outcomes: Vec<BatchOutcome> = groups
-        .into_par_iter()
-        .flat_map(|items| {
-            items
-                .into_par_iter()
-                .map_with(Compressors::default(), |compressors, item| {
-                    run_one(compressors, item, skip_if_larger_or_equal)
+    configs
+        .into_iter()
+        .map(|(algorithm_index, config)| BatchGroup {
+            config,
+            files: files
+                .iter()
+                .map(|(file_index, input)| BatchFile {
+                    result_index: (file_index * algorithms.len() + algorithm_index) as u32,
+                    input: Arc::clone(input),
                 })
+                .collect(),
         })
-        .collect();
+        .collect()
+}
 
-    // Outcomes come back in scheduled order; `order` says where each belongs.
+/// Compress every file with every algorithm on the caller's ambient rayon pool.
+///
+/// Schedule brotli, then zstd, then gzip, with files largest first inside each
+/// configuration. Return outcomes in file order, then configuration order.
+/// The binding validates that the file × algorithm count fits u32.
+///
+/// `skip_if_larger_or_equal` discards compressed output that would be at least
+/// as large as its input. A failure or panic is reported per task and never
+/// aborts the batch.
+#[hotpath::measure]
+pub fn run_batch(
+    inputs: Vec<Arc<InputBuffer>>,
+    algorithms: &[BatchAlgorithm],
+    skip_if_larger_or_equal: bool,
+) -> Vec<BatchOutcome> {
+    let groups = prepare_groups(inputs, algorithms);
+    let (mut order, mut outcomes): (Vec<u32>, Vec<BatchOutcome>) = groups
+        .into_par_iter()
+        .flat_map(|group| {
+            group.files.into_par_iter().map_with(
+                Compressors::default(),
+                move |compressors, file| {
+                    (
+                        file.result_index,
+                        run_one(
+                            compressors,
+                            group.config,
+                            file.input,
+                            skip_if_larger_or_equal,
+                        ),
+                    )
+                },
+            )
+        })
+        .unzip();
+
     scatter_in_place(&mut outcomes, &mut order);
-
     outcomes
 }
 
-/// Rearrange `data` so that `data[i]` holds what used to be at `order[i]`.
-///
-/// `order` must be a permutation of `0..data.len()`; it is left untouched, and
-/// elements only ever move by swapping — nothing is cloned or buffered.
-fn gather_in_place<T>(data: &mut [T], order: &[u32]) {
-    for target in 0..data.len() {
-        // Slots below `target` are already final: whatever they held has been
-        // swapped further along, so follow the chain to where it sits now.
-        let mut source = order[target] as usize;
-        while source < target {
-            source = order[source] as usize;
-        }
-        data.swap(target, source);
-    }
-}
-
-/// Move every `data[i]` to index `order[i]`, the inverse of
-/// [`gather_in_place`]. `order` is used as scratch and left as the identity
-/// permutation.
-pub(crate) fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
+/// Move every `data[i]` to index `order[i]`. `order` is a permutation of
+/// `0..data.len()`, used as scratch and left as the identity permutation.
+fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
     for i in 0..data.len() {
         // Each swap parks at least one element at its final index, so the
         // inner loop runs at most `len` times in total.
@@ -161,19 +142,20 @@ pub(crate) fn scatter_in_place<T>(data: &mut [T], order: &mut [u32]) {
 #[hotpath::measure]
 fn run_one(
     compressors: &mut Compressors,
-    item: BatchItem,
+    config: &BatchAlgorithm,
+    input: Arc<InputBuffer>,
     skip_if_larger_or_equal: bool,
 ) -> BatchOutcome {
-    let input_len = item.input.len();
-    let algorithm = item.algorithm;
-    // The item owns one shared reference; finishing this task releases it.
+    let input_len = input.len();
+    let algorithm = config.algorithm;
+    // Finishing this task releases its shared source handle.
     let result = catch_unwind(AssertUnwindSafe(|| {
         compressors.compress(
-            item.algorithm,
-            item.level,
-            item.window_bits,
-            item.section_size,
-            &item.input,
+            config.algorithm,
+            config.level,
+            config.window_bits,
+            config.section_size,
+            &input,
         )
     }))
     .unwrap_or_else(|_| {
@@ -205,198 +187,6 @@ fn run_one(
 mod tests {
     use super::*;
 
-    fn text_fixture(seed: usize) -> Vec<u8> {
-        format!("export const value{seed} = {seed};\n")
-            .repeat(200 + seed * 7)
-            .into_bytes()
-    }
-
-    /// Run a batch on a dedicated pool, the way the napi binding does.
-    /// `threads` of 0 means the rayon default (one per logical CPU).
-    fn run_batch_on_pool(
-        items: Vec<BatchItem>,
-        threads: usize,
-        skip_if_larger_or_equal: bool,
-    ) -> Vec<BatchOutcome> {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("build pool")
-            .install(|| run_batch(items, skip_if_larger_or_equal))
-    }
-
-    fn make_items(inputs: &[Vec<u8>]) -> Vec<BatchItem> {
-        let algorithms = [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd];
-        inputs
-            .iter()
-            .enumerate()
-            .map(|(i, input)| {
-                let algorithm = algorithms[i % algorithms.len()];
-                BatchItem {
-                    algorithm,
-                    level: algorithm.default_level(),
-                    window_bits: None,
-                    section_size: None,
-                    input: Arc::new(input.clone()),
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn batch_preserves_input_order_and_succeeds() {
-        let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
-        let outcomes = run_batch_on_pool(make_items(&inputs), 0, false);
-        assert_eq!(outcomes.len(), inputs.len());
-        for outcome in &outcomes {
-            assert!(outcome.error.is_none());
-            assert!(!outcome.skipped);
-            assert!(!outcome.data.is_empty());
-        }
-    }
-
-    #[test]
-    fn batch_is_deterministic_across_thread_counts() {
-        // Scheduling never affects output for inputs this size. Brotli inputs
-        // past `threads * sectionSize` are the one exception — they are cut
-        // into as many sections as the pool is wide — so keep the fixtures
-        // well under the sectioning threshold.
-        let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
-
-        let single = run_batch_on_pool(make_items(&inputs), 1, false);
-        for threads in [2, 4, 8] {
-            let multi = run_batch_on_pool(make_items(&inputs), threads, false);
-            assert_eq!(single.len(), multi.len());
-            for (a, b) in single.iter().zip(multi.iter()) {
-                assert_eq!(a.data, b.data, "output differs with {threads} threads");
-            }
-        }
-    }
-
-    #[test]
-    fn skip_if_larger_or_equal_marks_incompressible_items() {
-        // 4 bytes of data always grow under any container format.
-        let input = vec![1u8, 2, 3, 4];
-        let make_items = || {
-            vec![BatchItem {
-                algorithm: Algorithm::Gzip,
-                level: 6,
-                window_bits: None,
-                section_size: None,
-                input: Arc::new(input.clone()),
-            }]
-        };
-        let outcomes = run_batch_on_pool(make_items(), 0, true);
-        assert!(outcomes[0].skipped);
-        assert!(outcomes[0].data.is_empty());
-        assert!(outcomes[0].error.is_none());
-
-        let outcomes = run_batch_on_pool(make_items(), 0, false);
-        assert!(!outcomes[0].skipped);
-        assert!(outcomes[0].data.len() > input.len());
-    }
-
-    /// The `rank`-th permutation of `0..n` in Lehmer-code order.
-    fn permutation(n: usize, mut rank: usize) -> Vec<u32> {
-        let mut pool: Vec<u32> = (0..n as u32).collect();
-        (1..=n)
-            .rev()
-            .map(|remaining| {
-                let pick = rank % remaining;
-                rank /= remaining;
-                pool.remove(pick)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn gather_and_scatter_invert_each_other() {
-        for n in 1..=6usize {
-            let factorial: usize = (1..=n).product();
-            for rank in 0..factorial {
-                let order = permutation(n, rank);
-                let source: Vec<u32> = (0..n as u32).map(|i| i * 10).collect();
-
-                let mut data = source.clone();
-                gather_in_place(&mut data, &order);
-                for (target, &from) in order.iter().enumerate() {
-                    assert_eq!(
-                        data[target], source[from as usize],
-                        "gather n={n} rank={rank} order={order:?}"
-                    );
-                }
-
-                let mut scratch = order.clone();
-                scatter_in_place(&mut data, &mut scratch);
-                assert_eq!(data, source, "scatter n={n} rank={rank} order={order:?}");
-                assert_eq!(scratch, (0..n as u32).collect::<Vec<_>>());
-            }
-        }
-    }
-
-    #[test]
-    fn schedules_brotli_then_zstd_then_gzip_largest_first() {
-        // Sizes are distinct per item so the schedule is fully determined.
-        let algorithms = [
-            Algorithm::Gzip,
-            Algorithm::Brotli,
-            Algorithm::Zstd,
-            Algorithm::Gzip,
-            Algorithm::Brotli,
-            Algorithm::Zstd,
-        ];
-        let mut items: Vec<BatchItem> = algorithms
-            .iter()
-            .enumerate()
-            .map(|(i, &algorithm)| BatchItem {
-                algorithm,
-                level: algorithm.default_level(),
-                window_bits: None,
-                section_size: None,
-                input: Arc::new(vec![0u8; (i + 1) * 10]),
-            })
-            .collect();
-
-        let mut order: Vec<u32> = (0..items.len() as u32).collect();
-        order.sort_unstable_by_key(|&i| {
-            let item = &items[i as usize];
-            (algorithm_rank(item.algorithm), Reverse(item.input.len()))
-        });
-        gather_in_place(&mut items, &order);
-
-        let scheduled: Vec<(Algorithm, usize)> = items
-            .iter()
-            .map(|item| (item.algorithm, item.input.len()))
-            .collect();
-        assert_eq!(
-            scheduled,
-            vec![
-                (Algorithm::Brotli, 50),
-                (Algorithm::Brotli, 20),
-                (Algorithm::Zstd, 60),
-                (Algorithm::Zstd, 30),
-                (Algorithm::Gzip, 40),
-                (Algorithm::Gzip, 10),
-            ]
-        );
-    }
-
-    #[test]
-    fn outcomes_stay_paired_with_their_own_input() {
-        // Fixtures differ in size and algorithm, so the schedule reorders them
-        // heavily; every outcome must still decompress back to its own input.
-        let inputs: Vec<Vec<u8>> = (0..24).map(text_fixture).collect();
-        let items = make_items(&inputs);
-        let algorithms: Vec<Algorithm> = items.iter().map(|item| item.algorithm).collect();
-
-        let outcomes = run_batch_on_pool(items, 4, false);
-        assert_eq!(outcomes.len(), inputs.len());
-        for ((outcome, input), algorithm) in outcomes.iter().zip(&inputs).zip(algorithms) {
-            assert!(outcome.error.is_none());
-            assert_eq!(&decompress(algorithm, &outcome.data), input);
-        }
-    }
-
     fn decompress(algorithm: Algorithm, input: &[u8]) -> Vec<u8> {
         use std::io::Read;
         match algorithm {
@@ -416,77 +206,217 @@ mod tests {
         }
     }
 
+    fn text_fixture(seed: usize) -> Vec<u8> {
+        format!("export const value{seed} = {seed};\n")
+            .repeat(200 + seed * 7)
+            .into_bytes()
+    }
+
+    fn config(algorithm: Algorithm, level: u32) -> BatchAlgorithm {
+        BatchAlgorithm {
+            algorithm,
+            level,
+            window_bits: None,
+            section_size: None,
+        }
+    }
+
+    fn algorithms() -> [BatchAlgorithm; 4] {
+        [
+            config(Algorithm::Gzip, 1),
+            config(Algorithm::Brotli, 4),
+            config(Algorithm::Zstd, 3),
+            config(Algorithm::Gzip, 9),
+        ]
+    }
+
+    fn run_batch_on_pool(
+        inputs: Vec<Arc<InputBuffer>>,
+        algorithms: &[BatchAlgorithm],
+        threads: usize,
+        skip_if_larger_or_equal: bool,
+    ) -> Vec<BatchOutcome> {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool")
+            .install(|| run_batch(inputs, algorithms, skip_if_larger_or_equal))
+    }
+
+    #[test]
+    fn batch_preserves_file_then_configuration_order() {
+        let inputs: Vec<_> = [7, 0, 3, 3, 1]
+            .into_iter()
+            .map(|seed| Arc::new(text_fixture(seed)))
+            .chain([Arc::new(Vec::new())])
+            .collect();
+        let algorithms = algorithms();
+        let outcomes = run_batch_on_pool(inputs.clone(), &algorithms, 4, false);
+        assert_eq!(outcomes.len(), inputs.len() * algorithms.len());
+        for (file_outcomes, input) in outcomes.chunks(algorithms.len()).zip(&inputs) {
+            for (outcome, config) in file_outcomes.iter().zip(&algorithms) {
+                assert!(outcome.error.is_none());
+                assert!(!outcome.skipped);
+                assert_eq!(decompress(config.algorithm, &outcome.data), **input);
+                // The two gzip levels have identical algorithm metadata.
+                let fresh = crate::compress::compress(
+                    config.algorithm,
+                    config.level,
+                    config.window_bits,
+                    config.section_size,
+                    input,
+                )
+                .expect("compress");
+                assert_eq!(outcome.data, fresh);
+            }
+        }
+    }
+
+    #[test]
+    fn batch_is_deterministic_across_thread_counts() {
+        let inputs: Vec<_> = (0..24).map(|i| Arc::new(text_fixture(i))).collect();
+        let algorithms = algorithms();
+        let single = run_batch_on_pool(inputs.clone(), &algorithms, 1, false);
+        for threads in [2, 4, 8] {
+            let multi = run_batch_on_pool(inputs.clone(), &algorithms, threads, false);
+            assert_eq!(single.len(), multi.len());
+            for (a, b) in single.iter().zip(multi.iter()) {
+                assert_eq!(a.data, b.data, "output differs with {threads} threads");
+            }
+        }
+    }
+
+    #[test]
+    fn skip_if_larger_or_equal_marks_incompressible_items() {
+        let input = Arc::new(vec![1u8, 2, 3, 4]);
+        let algorithms = algorithms();
+        let outcomes = run_batch_on_pool(vec![Arc::clone(&input)], &algorithms, 0, true);
+        for outcome in outcomes {
+            assert!(outcome.skipped);
+            assert!(outcome.data.is_empty());
+            assert!(outcome.error.is_none());
+        }
+        let outcomes = run_batch_on_pool(vec![Arc::clone(&input)], &algorithms, 0, false);
+        for outcome in outcomes {
+            assert!(!outcome.skipped);
+            assert!(outcome.data.len() > input.len());
+        }
+    }
+
+    /// The `rank`-th permutation of `0..n` in Lehmer-code order.
+    fn permutation(n: usize, mut rank: usize) -> Vec<u32> {
+        let mut pool: Vec<u32> = (0..n as u32).collect();
+        (1..=n)
+            .rev()
+            .map(|remaining| {
+                let pick = rank % remaining;
+                rank /= remaining;
+                pool.remove(pick)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scatter_restores_every_permutation() {
+        for n in 1..=6usize {
+            let factorial: usize = (1..=n).product();
+            for rank in 0..factorial {
+                let mut order = permutation(n, rank);
+                let mut data: Vec<_> = order.iter().map(|i| i * 10).collect();
+                scatter_in_place(&mut data, &mut order);
+                assert_eq!(data, (0..n as u32).map(|i| i * 10).collect::<Vec<_>>());
+                assert_eq!(order, (0..n as u32).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn schedules_brotli_then_zstd_then_gzip_largest_first() {
+        let algorithms = algorithms();
+        let inputs = [20, 50, 10]
+            .into_iter()
+            .map(|len| Arc::new(vec![0u8; len]))
+            .collect();
+        let groups = prepare_groups(inputs, &algorithms);
+        let scheduled: Vec<_> = groups
+            .iter()
+            .map(|group| {
+                (
+                    group.config.algorithm,
+                    group.config.level,
+                    group
+                        .files
+                        .iter()
+                        .map(|file| file.input.len())
+                        .collect::<Vec<_>>(),
+                    group
+                        .files
+                        .iter()
+                        .map(|file| file.result_index)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            scheduled,
+            vec![
+                (Algorithm::Brotli, 4, vec![50, 20, 10], vec![5, 1, 9]),
+                (Algorithm::Zstd, 3, vec![50, 20, 10], vec![6, 2, 10]),
+                (Algorithm::Gzip, 1, vec![50, 20, 10], vec![4, 0, 8]),
+                (Algorithm::Gzip, 9, vec![50, 20, 10], vec![7, 3, 11]),
+            ]
+        );
+    }
+
     #[test]
     fn shared_input_survives_a_failed_task_and_is_released_after_the_last_task() {
         let expected = text_fixture(1);
         let input = Arc::new(expected.clone());
         let weak = Arc::downgrade(&input);
-        let make_item = |algorithm, level| BatchItem {
-            algorithm,
-            level,
-            window_bits: None,
-            section_size: None,
-            input: Arc::clone(&input),
-        };
         let failed = run_one(
             &mut Compressors::default(),
-            make_item(Algorithm::Brotli, 99),
+            &config(Algorithm::Brotli, 99),
+            Arc::clone(&input),
             false,
         );
         assert!(failed.error.is_some());
-        let items = vec![
-            make_item(Algorithm::Gzip, 6),
-            make_item(Algorithm::Zstd, 3),
-            make_item(Algorithm::Brotli, 4),
-        ];
-        drop(input);
         assert!(weak.upgrade().is_some());
 
-        let outcomes = run_batch_on_pool(items, 3, false);
+        let algorithms = algorithms();
+        let outcomes = run_batch_on_pool(vec![input], &algorithms, 3, false);
         assert!(weak.upgrade().is_none());
-        for (outcome, algorithm) in
-            outcomes
-                .iter()
-                .zip([Algorithm::Gzip, Algorithm::Zstd, Algorithm::Brotli])
-        {
+        for (outcome, config) in outcomes.iter().zip(&algorithms) {
             assert!(outcome.error.is_none());
-            assert_eq!(decompress(algorithm, &outcome.data), expected);
+            assert_eq!(decompress(config.algorithm, &outcome.data), expected);
         }
     }
 
     #[test]
     fn single_failure_does_not_abort_batch() {
-        let good = b"hello world hello world hello world".to_vec();
-        let items = vec![
-            BatchItem {
-                algorithm: Algorithm::Gzip,
-                level: 6,
-                window_bits: None,
-                section_size: None,
-                input: Arc::new(good.clone()),
-            },
-            BatchItem {
-                // Invalid level sneaks past FFI validation only in theory,
-                // but the scheduler must still isolate the failure.
-                algorithm: Algorithm::Zstd,
-                level: 99,
-                window_bits: None,
-                section_size: None,
-                input: Arc::new(good.clone()),
-            },
-        ];
-        let outcomes = run_batch_on_pool(items, 0, false);
-        assert!(outcomes[0].error.is_none());
-        assert!(!outcomes[0].data.is_empty());
-        assert!(matches!(
-            outcomes[1].error,
-            Some(Error::InvalidLevel {
-                algorithm: Algorithm::Zstd,
-                level: 99,
-                ..
-            })
-        ));
-        assert!(outcomes[1].data.is_empty());
-        assert!(!outcomes[1].skipped);
+        let inputs = vec![Arc::new(text_fixture(0)), Arc::new(text_fixture(1))];
+        let algorithms = [config(Algorithm::Gzip, 6), config(Algorithm::Zstd, 99)];
+        let outcomes = run_batch_on_pool(inputs, &algorithms, 0, false);
+        assert_eq!(outcomes.len(), 4);
+        for file_outcomes in outcomes.chunks(2) {
+            assert!(file_outcomes[0].error.is_none());
+            assert!(!file_outcomes[0].data.is_empty());
+            assert!(matches!(
+                file_outcomes[1].error,
+                Some(Error::InvalidLevel {
+                    algorithm: Algorithm::Zstd,
+                    level: 99,
+                    ..
+                })
+            ));
+            assert!(file_outcomes[1].data.is_empty());
+            assert!(!file_outcomes[1].skipped);
+        }
+    }
+
+    #[test]
+    fn empty_files_or_algorithms_produce_no_results() {
+        assert!(run_batch(Vec::new(), &algorithms(), false).is_empty());
+        assert!(run_batch(vec![Arc::new(text_fixture(0))], &[], false).is_empty());
+        assert!(run_batch(Vec::new(), &[], false).is_empty());
     }
 }
