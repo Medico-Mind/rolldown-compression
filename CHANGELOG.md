@@ -1,5 +1,15 @@
 # @medicomind/rolldown-compression
 
+## 2.5.2
+
+### Patch Changes
+
+- [`cb1cfe8`](https://github.com/Medico-Mind/rolldown-compression/commit/cb1cfe835554389b92b3b79f9e57480911ed7498) Thanks [@Mnwa](https://github.com/Mnwa)! - Pass each source file to Rust once per batch and share its buffer across compression algorithms, with algorithm settings sent separately.
+
+- [`b1fbdfe`](https://github.com/Medico-Mind/rolldown-compression/commit/b1fbdfef82174a8cc8aa8ff3e326d9735c5267b6) Thanks [@Mnwa](https://github.com/Mnwa)! - Use the same Brotli encoder for single-section and parallel compression.
+
+- [`f8b39cb`](https://github.com/Medico-Mind/rolldown-compression/commit/f8b39cbbd62cfc3f5ca3805182efd3d58804168c) Thanks [@Mnwa](https://github.com/Mnwa)! - Update the WebAssembly runtime dependency to @napi-rs/wasm-runtime 1.2.4.
+
 ## 2.5.1
 
 ### Patch Changes
