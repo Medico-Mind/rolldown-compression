@@ -28,9 +28,9 @@ export interface GzipOptions {
 /**
  * Brotli options. `quality`: 0-11, default 11. `windowBits`: 10-24, default 22.
  * `sectionSize`: target bytes per section when large inputs are split across
- * the native brotli worker pool; inputs at least twice this size take the
- * multithreaded path. Defaults to two windows (`2^(windowBits + 1)` bytes),
- * i.e. 8 MiB and multithreading from 16 MiB at the default window. Smaller
+ * the native brotli worker pool; inputs larger than one section are split.
+ * Defaults to two windows (`2^(windowBits + 1)` bytes), i.e. 8 MiB
+ * at the default window. Smaller
  * sections finish large files faster at a cost in compression ratio, and are
  * clamped to the 64 KiB - 16 MiB range the encoder segments in.
  */
