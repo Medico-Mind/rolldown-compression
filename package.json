@@ -88,17 +88,17 @@
     "rolldown": "^1.0.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
+    "@biomejs/biome": "^2.5.13",
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.2",
     "@emnapi/core": "2.0.0-alpha.5",
     "@emnapi/runtime": "2.0.0-alpha.5",
-    "@napi-rs/cli": "^3.9.0",
-    "@napi-rs/wasm-runtime": "^1.2.3",
-    "@types/node": "^26.5.0",
+    "@napi-rs/cli": "^3.9.1",
+    "@napi-rs/wasm-runtime": "^1.2.4",
+    "@types/node": "^26.5.1",
     "@vitest/coverage-v8": "^5.0.0",
     "emnapi": "^2.0.0-alpha.5",
-    "rolldown": "^1.2.7",
+    "rolldown": "^1.2.8",
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
