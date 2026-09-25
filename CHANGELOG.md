@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.5.3
+
+### Patch Changes
+
+- [`5117b7d`](https://github.com/Medico-Mind/rolldown-compression/commit/5117b7dc2ddb2f86cfba7dcc4b53139bc302459f) Thanks [@Mnwa](https://github.com/Mnwa)! - Fix intermittent `illegal hardware instruction` crashes while compressing: a stack overflow on the rayon workers. Single-section brotli inputs run inline again instead of joining a parallel iterator, and the worker pool is always built with 16 MiB stacks.
+
 ## 2.5.2
 
 ### Patch Changes
