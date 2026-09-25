@@ -109,11 +109,19 @@ fn compress_parallel(
         None => ParallelCompressor::new(config, parallel_config)?,
     };
     let mut prepared = compressor.prepare_slice(input, BatchConfig::auto(tasks))?;
-    prepared
-        .take_tasks()?
-        .into_par_iter()
-        .with_max_len(1)
-        .for_each(|task| task.run());
+    let tasks = prepared.take_tasks()?;
+    // A single task runs inline. Joining a parallel iterator lets rayon run
+    // other files' jobs on this thread's stack while it waits, and each of
+    // those can nest again; with a quality 11 encoder frame per level that
+    // overflowed the 2 MiB worker stack when every file took this path.
+    if tasks.len() == 1 {
+        tasks.into_iter().for_each(|task| task.run());
+    } else {
+        tasks
+            .into_par_iter()
+            .with_max_len(1)
+            .for_each(|task| task.run());
+    }
     let mut output = Vec::new();
     prepared.finish_into(&mut output)?;
     COMPRESSOR.with_borrow_mut(|slot| *slot = Some(compressor));

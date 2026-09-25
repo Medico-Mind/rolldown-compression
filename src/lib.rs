@@ -199,13 +199,22 @@ mod binding {
     /// Guards the one and only `build_global` attempt of this process.
     static GLOBAL_POOL: std::sync::Once = std::sync::Once::new();
 
-    /// Size rayon's global pool to `concurrency` threads.
+    /// Stack size of every compression worker.
+    ///
+    /// Brotli splits large inputs across the same pool, and a worker joining
+    /// those sections may run other files on its stack while it waits, each
+    /// with a quality 11 encoder frame. The 2 MiB std default overflowed on
+    /// real builds; this is address space reserved per worker, not memory
+    /// committed up front.
+    const WORKER_STACK_SIZE: usize = 16 << 20;
+
+    /// Build rayon's global pool with [`WORKER_STACK_SIZE`] stacks and
+    /// `concurrency` threads, where 0 keeps rayon's default of one thread per
+    /// logical CPU.
     ///
     /// The global pool can only be built once per process, so the first batch
-    /// that requests an explicit concurrency wins and every later request is a
-    /// no-op — including one asking for a different thread count. Without an
-    /// explicit concurrency the pool keeps rayon's default sizing, one thread
-    /// per logical CPU.
+    /// wins and every later request is a no-op — including one asking for a
+    /// different thread count.
     ///
     /// A pool that cannot be configured is not fatal: compression still runs
     /// on whatever global pool exists, so the failure is only warned about.
@@ -213,10 +222,11 @@ mod binding {
         GLOBAL_POOL.call_once(|| {
             if let Err(err) = rayon::ThreadPoolBuilder::new()
                 .num_threads(concurrency)
+                .stack_size(WORKER_STACK_SIZE)
                 .build_global()
             {
                 eprintln!(
-                    "warning: could not size the compression thread pool to {concurrency} threads ({err}); using the default pool instead"
+                    "warning: could not configure the compression thread pool ({err}); using the default pool instead"
                 );
             }
         });
@@ -278,15 +288,13 @@ mod binding {
         let concurrency = options
             .as_ref()
             .and_then(|options| options.concurrency)
-            .filter(|concurrency| *concurrency > 0);
+            .unwrap_or(0);
         let skip_if_larger_or_equal = options
             .as_ref()
             .and_then(|options| options.skip_if_larger_or_equal)
             .unwrap_or(false);
 
-        if let Some(concurrency) = concurrency {
-            configure_global_pool(concurrency as usize);
-        }
+        configure_global_pool(concurrency as usize);
 
         Ok(AsyncTask::new(CompressWorker {
             files,
