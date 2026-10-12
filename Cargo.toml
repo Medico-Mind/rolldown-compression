@@ -9,9 +9,9 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-mbrotli = "0.4"
+mbrotli = "0.5.9"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
-hotpath = "0.25"
+hotpath = "0.28.6"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
 napi-derive = "3"
 rayon = "1.12"
