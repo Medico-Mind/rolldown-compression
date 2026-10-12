@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.5.5
+
+### Patch Changes
+
+- [`062c592`](https://github.com/Medico-Mind/rolldown-compression/commit/062c59200ad5202394302fb96de766b3df7a3100) Thanks [@Mnwa](https://github.com/Mnwa)! - remove prealloc for mbrotli compression
+
 ## 2.5.4
 
 ### Patch Changes
