@@ -109,7 +109,6 @@ fn compress_parallel(
         None => ParallelCompressor::new(config, parallel_config)?,
     };
     let config = BatchConfig::auto(tasks);
-    let estimate = compressor.estimate_source(input.len() as u64, &config)?;
     let mut prepared = compressor.prepare_slice(input, config)?;
     let tasks = prepared.take_tasks()?;
     // A single task runs inline. Joining a parallel iterator lets rayon run
@@ -124,9 +123,8 @@ fn compress_parallel(
             .with_max_len(1)
             .for_each(|task| task.run());
     }
-    let mut output = Vec::with_capacity(estimate.maximum_final_bytes as usize);
+    let mut output = Vec::new();
     prepared.finish_into(&mut output)?;
-    output.shrink_to_fit();
     COMPRESSOR.with_borrow_mut(|slot| *slot = Some(compressor));
     Ok(output)
 }
