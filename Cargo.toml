@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-mbrotli = "0.5.9"
+mbrotli = { version = "0.5.9", default-features = false, features = ["std", "compression"] }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 hotpath = "0.28.6"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
