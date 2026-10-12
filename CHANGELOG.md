@@ -1,5 +1,13 @@
 # @medicomind/rolldown-compression
 
+## 2.5.4
+
+### Patch Changes
+
+- [`db89429`](https://github.com/Medico-Mind/rolldown-compression/commit/db894294d6fcdc1c83eb90a562b89ab32e301bd2) Thanks [@Mnwa](https://github.com/Mnwa)! - Update the WebAssembly runtime dependencies to @emnapi/core and @emnapi/runtime 2.0.0-alpha.6.
+
+- [`5044f68`](https://github.com/Medico-Mind/rolldown-compression/commit/5044f6880bf6d0bd22d3e14206b6fcc5071f1875) Thanks [@Mnwa](https://github.com/Mnwa)! - Bump mbrotli and add prealloc memory for output
+
 ## 2.5.3
 
 ### Patch Changes
