@@ -10,18 +10,21 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mbrotli = { version = "0.5.9", default-features = false, features = ["std", "compression"] }
+mzstd = { version = "0.2", default-features = false, features = ["std", "compression"] }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 hotpath = "0.28.6"
 napi = { version = "3", default-features = false, features = ["napi10", "dyn-symbols", "node_version_detect"] }
 napi-derive = "3"
 rayon = "1.12"
 thiserror = "2"
-zstd = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 # Decoder only: `mbrotli` compresses but ships no decoder, so the round-trip
 # tests still need one.
 simd-brotli = { version = "10" }
+# Decoder only: the reference C implementation checks `mzstd`'s frames
+# independently of the encoder under test.
+zstd = { version = "0.14", default-features = false }
 
 [features]
 hotpath = ["hotpath/hotpath"]
@@ -30,9 +33,6 @@ hotpath-cpu = ["hotpath/hotpath-cpu"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc3 = "0.1"
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-zstd = { version = "0.14", default-features = false, features = ["no_asm"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc3 = { version = "0.1", features = ["local_dynamic_tls"] }

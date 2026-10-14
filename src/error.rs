@@ -25,8 +25,10 @@ pub enum Error {
     BufferTooLarge,
     #[error("gzip compression failed: {0}")]
     Gzip(#[source] std::io::Error),
+    #[error("invalid zstd configuration: {0}")]
+    ZstdConfig(#[from] mzstd::ConfigError),
     #[error("zstd compression failed: {0}")]
-    Zstd(#[source] std::io::Error),
+    Zstd(#[from] mzstd::compressor::parallel::ParallelEncodeError),
     #[error("{0}")]
     BrotliConfig(#[from] mbrotli::ConfigError),
     #[error("{0}")]
@@ -49,6 +51,7 @@ impl From<Error> for NapiError {
             | Error::BatchTooLarge
             | Error::BufferTooLarge => Status::InvalidArg,
             Error::Gzip(_)
+            | Error::ZstdConfig(_)
             | Error::Zstd(_)
             | Error::BrotliConfig(_)
             | Error::Brotli(_)
@@ -87,17 +90,22 @@ mod tests {
 
     #[test]
     fn codec_failures_retain_their_typed_sources() {
-        for error in [
-            Error::Gzip(std::io::Error::other("encoder failed")),
-            Error::Zstd(std::io::Error::other("encoder failed")),
-        ] {
-            let source = error
+        let error = Error::Gzip(std::io::Error::other("encoder failed"));
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), std::io::ErrorKind::Other);
+        let error = Error::from(mzstd::Level::try_from(23).unwrap_err());
+        assert!(error.source().unwrap().is::<mzstd::ConfigError>());
+        let error = Error::from(mzstd::compressor::parallel::ParallelEncodeError::InvalidState);
+        assert!(
+            error
                 .source()
                 .unwrap()
-                .downcast_ref::<std::io::Error>()
-                .unwrap();
-            assert_eq!(source.kind(), std::io::ErrorKind::Other);
-        }
+                .is::<mzstd::compressor::parallel::ParallelEncodeError>()
+        );
         let source = mbrotli::Quality::try_from(12).unwrap_err();
         let error = Error::from(source);
         assert!(error.source().unwrap().is::<mbrotli::ConfigError>());
@@ -107,7 +115,8 @@ mod tests {
     fn runtime_failures_convert_to_generic_failure() {
         let errors = [
             Error::Gzip(std::io::Error::other("encoder failed")),
-            Error::Zstd(std::io::Error::other("encoder failed")),
+            Error::from(mzstd::Level::try_from(23).unwrap_err()),
+            Error::from(mzstd::compressor::parallel::ParallelEncodeError::InvalidState),
             Error::from(mbrotli::Quality::try_from(12).unwrap_err()),
             Error::from(mbrotli::compressor::parallel::TaskCount::try_from(0).unwrap_err()),
             Error::from(mbrotli::compressor::parallel::ParallelEncodeError::Cancelled),

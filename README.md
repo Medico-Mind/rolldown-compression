@@ -113,6 +113,8 @@ defineAlgorithm('brotli', { quality: 7, windowBits: 22 })
 defineAlgorithm('zstd', { level: 12 })
 ```
 
+zstd levels 20–22 are capped at an 8 MiB window (`windowLog` 23), the most browsers accept for `Content-Encoding: zstd` (RFC 9659); their default 32–128 MiB windows would make Chrome and Firefox reject any file above 8 MiB. Files up to 8 MiB compress exactly as without the cap.
+
 `sectionSize` is the target number of bytes in each section when a large input is split across the native worker pool; inputs larger than one section are split. It defaults to two windows (`2^(windowBits + 1)` bytes) — 8 MiB at the default window — because sections much smaller than the window lose too many cross-section matches. The encoder segments between 64 KiB and 16 MiB, and values outside that range are clamped to it.
 
 Smaller sections finish large files faster and cost ratio. Measured on 31.8 MiB of real JS at quality 9, `windowBits: 22`, against the 4 MiB point:
@@ -257,7 +259,7 @@ Results on an Apple M5 Pro (18 cores), Node 26, default `UV_THREADPOOL_SIZE`:
 
 Reading these numbers honestly:
 
-- **gzip** and **zstd** are faster per core ([zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), ~2.4x faster per core than node's bundled zlib in our measurements; libzstd) *and* use every core, while `node:zlib` is capped at `UV_THREADPOOL_SIZE` (default 4) threads. The two >16 MiB bundles temper the headline numbers: neither algorithm has a sectioned mode, so each giant file occupies a single thread on both sides and that tail runs at the per-core ratio rather than the thread-count ratio.
+- **gzip** and **zstd** are faster per core ([zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), ~2.4x faster per core than node's bundled zlib in our measurements; [mzstd](https://github.com/M-Compressors/mzstd), byte-identical to libzstd 1.5.7) *and* use every core, while `node:zlib` is capped at `UV_THREADPOOL_SIZE` (default 4) threads. The two >16 MiB bundles temper the headline numbers: gzip has no sectioned mode, so each giant file occupies a single thread on both sides and that tail runs at the per-core ratio rather than the thread-count ratio.
 - **brotli at quality 11** is the bound on the combined number: the Rust encoder is at per-core parity with node's C brotli (we measured a 1.01 single-thread ratio), so the speedup is parallelism — every core against `UV_THREADPOOL_SIZE` threads across the many small files, plus the split worker pool on the >16 MiB bundles that `node:zlib` has to compress one thread per file.
 > [!WARNING]
 > **The brotli rows below predate the `mbrotli` migration and have not been re-measured.** That release replaced the encoder, and a section now costs more ratio to split than it used to. Expect the brotli numbers to have moved substantially in both wall clock and output size; the gzip and zstd rows are unaffected. Re-run `npm run bench` for current figures.
@@ -324,7 +326,7 @@ the host, so on an unsupported platform the wasm package must be opted into:
 - **No custom JS algorithms**: `algorithms` accepts only the built-in `gzip` / `brotli` / `zstd` (function-form algorithms can't cross the FFI boundary). `defineAlgorithm` returns an opaque object, not a `[name, options]` tuple — treat it as such.
 - **No tarball plugin**: out of scope.
 - **gzip default level is 6** (zlib default), not 9 — measurably faster for a ~1% size difference. Pass `defineAlgorithm('gzip', { level: 9 })` to match the reference.
-- **zstd everywhere**: zstd is compiled in, with no dependency on the Node runtime's zstd support (node >= 22.15).
+- **zstd everywhere**: zstd is compiled in (pure Rust, via `mzstd`), with no dependency on the Node runtime's zstd support (node >= 22.15). Inputs above 4 MiB are split into segments across the worker pool, like brotli's sections.
 - Extra options: `concurrency` (native thread cap), `chunkSize` (memory cap per compression batch), `stream` (on-demand disk-based compression in `writeBundle`) and `enableInWatchMode`.
 
 ## Implementation decisions

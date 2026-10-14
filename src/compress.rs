@@ -22,8 +22,8 @@ pub use inner_brotli::{BROTLI_DEFAULT_WINDOW_BITS, validate_section_size, valida
 
 /// Owned compression input: the napi buffer handed over the FFI boundary in
 /// production, a plain `Vec<u8>` under `cargo test`. Both hand out `&[u8]`
-/// and are `Send + Sync`, which lets brotli's worker pool share the buffer
-/// across threads without copying it.
+/// and are `Send + Sync`, which lets the brotli and zstd worker pools share
+/// the buffer across threads without copying it.
 #[cfg(not(test))]
 pub type InputBuffer = napi::bindgen_prelude::Buffer;
 /// Owned compression input; `Vec<u8>` stands in for the napi buffer in tests.
@@ -101,8 +101,8 @@ impl Display for Algorithm {
 /// `window_bits` and `section_size` are only used by brotli and ignored by
 /// other algorithms.
 ///
-/// Borrows the input for the duration of compression, including brotli's
-/// scoped parallel work. The scheduler owns the source allocation.
+/// Borrows the input for the duration of compression, including brotli's and
+/// zstd's scoped parallel work. The scheduler owns the source allocation.
 #[hotpath::measure]
 pub fn compress(
     algorithm: Algorithm,
