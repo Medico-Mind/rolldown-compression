@@ -51,6 +51,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "borrowed-buf"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f17ad7280ae7c89e7f53e05a9cd48d66b77b51c4ad7fb7a5195cec0e2548b50"
+
+[[package]]
 name = "branches"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -442,9 +448,9 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mbrotli"
-version = "0.5.11"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4e58730cdbe70e598298852ace7216ad56665d45618da0f672de82aa71f6f5d"
+checksum = "b478c78c1860a28ad815867a2a51b41284634abb137ecb2ac911988dd05f8dbc"
 dependencies = [
  "fearless_simd 1.1.0",
  "fearless_simd_macros",
@@ -478,10 +484,11 @@ dependencies = [
 
 [[package]]
 name = "mzstd"
-version = "0.2.1"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c847f149d9d0f005b13f6589fd39567bde727826de3775b50385b9dfa0309c3d"
+checksum = "ff66c369ef07e08446c6e3f5da6bb4eb9254423c1c8ac054774591b6fa8a92fc"
 dependencies = [
+ "borrowed-buf",
  "branches",
  "fearless_simd 1.1.0",
  "fearless_simd_macros",
