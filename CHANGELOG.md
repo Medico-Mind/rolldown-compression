@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.6.2
+
+### Patch Changes
+
+- [`d25922f`](https://github.com/Medico-Mind/rolldown-compression/commit/d25922f6e4abd109ebec325a120d143149fce607) Thanks [@Mnwa](https://github.com/Mnwa)! - Bump mbrotli and mzstd (perfomance update)
+
 ## 2.6.1
 
 ### Patch Changes
