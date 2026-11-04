@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.6.3
+
+### Patch Changes
+
+- [`6bbc9d3`](https://github.com/Medico-Mind/rolldown-compression/commit/6bbc9d387ace9e353267ad05708de134157463a6) Thanks [@Mnwa](https://github.com/Mnwa)! - Update Cargo and npm dependencies: mbrotli 0.5.20, mzstd 0.2.11, napi 3.16, mimalloc3 0.1.60; the wasm32-wasi binding now depends on emnapi 2.0.0-beta.3 and @napi-rs/wasm-runtime ~1.2.7
+
 ## 2.6.2
 
 ### Patch Changes
