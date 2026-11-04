@@ -43,8 +43,8 @@
   "browser": "rolldown-compression.wasi-browser.js",
   "type": "module",
   "dependencies": {
-    "@napi-rs/wasm-runtime": "~1.2.4",
-    "@emnapi/core": "2.0.0-alpha.6",
-    "@emnapi/runtime": "2.0.0-alpha.6"
+    "@napi-rs/wasm-runtime": "~1.2.7",
+    "@emnapi/core": "2.0.0-beta.3",
+    "@emnapi/runtime": "2.0.0-beta.3"
   }
 }
