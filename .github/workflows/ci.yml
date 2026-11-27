@@ -71,12 +71,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: wasm32-wasip1-threads
-      # clang toolchain for zstd-sys's C sources; napi build picks it up
-      # through WASI_SDK_PATH.
-      - name: Install wasi-sdk
-        run: |
-          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
-          echo "WASI_SDK_PATH=$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux" >> "$GITHUB_ENV"
+      # Debug experiment: no wasi-sdk, so the build links Rust's self-contained
+      # wasi-libc like a local build does. With wasi-sdk-29 and rustc 1.100 the
+      # main thread spins forever in wasi-libc's __pthread_key_delete during
+      # module init. The wasm build has no C sources any more (zstd-sys is a
+      # dev-dependency only), so nothing else needs the SDK.
       - run: npm ci
       # Debug: keep the wasm name section so hang-report.sh can name the wasm
       # functions on a stuck stack through V8's perf map.
