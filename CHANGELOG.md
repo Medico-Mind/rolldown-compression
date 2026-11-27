@@ -1,5 +1,11 @@
 # @medicomind/rolldown-compression
 
+## 2.6.4
+
+### Patch Changes
+
+- [`03ee2a9`](https://github.com/Medico-Mind/rolldown-compression/commit/03ee2a9185a3782fb9188377ad0f9ce5a36e5809) Thanks [@Mnwa](https://github.com/Mnwa)! - Update Cargo and npm dependencies: mbrotli 0.5.23, mzstd 0.2.17, flate2 1.1.11 (zlib-rs 0.6.9), napi 3.16.3, napi-derive 3.7.2, mimalloc3 0.1.61, hotpath 0.33
+
 ## 2.6.3
 
 ### Patch Changes
