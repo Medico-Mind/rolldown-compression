@@ -13,13 +13,15 @@
 # On a hang it then collects, in order:
 #   1. every thread of the process with its kernel wait channel (Linux),
 #   2. a Node diagnostic report (JS stack, native stack, libuv handles and the
-#      same for each Worker), triggered through SIGUSR2. The isolate has to
-#      take an interrupt to write it, so a thread parked in Atomics.wait
-#      writes none; a thread spinning in JS or wasm does,
-#   3. native backtraces of every thread through gdb (Linux, when sudo can
-#      install it), which work whatever state the threads are in: a frame in
-#      FutexEmulation::Wait is an Atomics.wait, epoll/pthread frames are libuv.
-# The report files stay in $NODE_REPORT_DIR for an artifact upload.
+#      same for each Worker), triggered through SIGUSR2. It is written from
+#      the event loop, so a thread that blocks or spins writes none,
+#   3. through gdb (Linux, when sudo can install it): a few samples of the
+#      main thread's JIT/wasm stack, walked along the frame pointer chain and
+#      named through V8's perf map (--perf-basic-prof), so a busy loop in wasm
+#      shows its Rust function; then native backtraces of every thread, where
+#      FutexEmulation::Wait is an Atomics.wait and epoll/pthread is libuv.
+# The report files and the perf map stay in $NODE_REPORT_DIR for an artifact
+# upload.
 set -uo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -33,11 +35,11 @@ shift
 report_dir=${NODE_REPORT_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/node-report}
 mkdir -p "$report_dir"
 
-trace_preload="$(cd "$(dirname "$0")" && pwd)/trace-blocking.cjs"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 # NODE_OPTIONS reaches the child even when the command is not `node` itself
 # (npm, npx), and Workers inherit it.
-export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$trace_preload --report-on-signal --report-signal=SIGUSR2 --report-directory=$report_dir --report-exclude-network --trace-warnings"
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$script_dir/trace-blocking.cjs --perf-basic-prof --report-on-signal --report-signal=SIGUSR2 --report-directory=$report_dir --report-exclude-network --trace-warnings"
 
 "$@" &
 pid=$!
@@ -62,7 +64,7 @@ echo "::endgroup::"
 
 echo "::group::Node diagnostic report"
 kill -USR2 "$pid" 2>/dev/null || true
-for _ in $(seq 1 20); do
+for _ in $(seq 1 5); do
   compgen -G "$report_dir/report.*.json" >/dev/null && break
   sleep 1
 done
@@ -98,6 +100,34 @@ if [ -d "/proc/$pid/task" ] && command -v sudo >/dev/null; then
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gdb >/dev/null 2>&1 || true
   fi
   if command -v gdb >/dev/null; then
+    perf_map="/tmp/perf-$pid.map"
+    [ -f "$perf_map" ] && cp "$perf_map" "$report_dir/" || true
+    # x86-64 only: V8 JIT and wasm frames keep rbp as a frame pointer, which
+    # gdb has no unwind info to follow by itself.
+    walk="$report_dir/walk-frames.gdb"
+    cat > "$walk" <<'GDB'
+set pagination off
+thread 1
+printf "pc  %#lx\n", $pc
+set $fp = $rbp
+set $depth = 0
+while $depth < 64 && $fp != 0
+  printf "ret %#lx\n", *(unsigned long *)($fp + 8)
+  set $fp = *(unsigned long *)$fp
+  set $depth = $depth + 1
+end
+GDB
+    echo "::endgroup::"
+    for sample in 1 2 3 4 5; do
+      echo "::group::Main thread JIT/wasm stack, sample $sample"
+      sudo timeout 60 gdb -batch -nx -p "$pid" -x "$walk" 2>&1 \
+        | grep -E '^(pc|ret) ' \
+        | if [ -f "$perf_map" ]; then node "$script_dir/symbolize-perf-map.cjs" "$perf_map"; else cat; fi \
+        || true
+      echo "::endgroup::"
+      sleep 1
+    done
+    echo "::group::Native backtraces (gdb)"
     sudo timeout 120 gdb -batch -nx -p "$pid" \
       -ex "set pagination off" \
       -ex "info threads" \

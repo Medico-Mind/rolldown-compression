@@ -78,7 +78,11 @@ jobs:
           curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
           echo "WASI_SDK_PATH=$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux" >> "$GITHUB_ENV"
       - run: npm ci
+      # Debug: keep the wasm name section so hang-report.sh can name the wasm
+      # functions on a stuck stack through V8's perf map.
       - run: npx napi build --platform --release --target wasm32-wasip1-threads
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
       # 'error' forbids the silent fallback to a native .node, proving the
       # wasm binding itself loads and compresses. A green run takes well under
       # a second; past the deadline hang-report.sh dumps the JS, Worker and
@@ -95,7 +99,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wasm-hang-report
-          path: ${{ runner.temp }}/node-report
+          path: |
+            ${{ runner.temp }}/node-report
+            rolldown-compression.wasm32-wasi.wasm
+            rolldown-compression.wasm32-wasi.debug.wasm
           if-no-files-found: ignore
       # The full suite runs with 'true' (prefer wasm, keep native when a
       # package has no wasm binding): rolldown itself is napi-rs based and
