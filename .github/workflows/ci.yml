@@ -57,6 +57,8 @@ jobs:
   test-wasm:
     name: Test (wasm32-wasip1-threads fallback)
     runs-on: ubuntu-latest
+    # A wasm thread deadlock otherwise holds the runner for the 6 h default.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -78,9 +80,23 @@ jobs:
       - run: npm ci
       - run: npx napi build --platform --release --target wasm32-wasip1-threads
       # 'error' forbids the silent fallback to a native .node, proving the
-      # wasm binding itself loads and compresses.
+      # wasm binding itself loads and compresses. A green run takes well under
+      # a second; past the deadline hang-report.sh dumps the JS, Worker and
+      # native stacks of the stuck process instead of idling until the job
+      # timeout.
       - name: Smoke test wasm binding
-        run: NAPI_RS_FORCE_WASI=error node scripts/wasm-smoke.mjs
+        timeout-minutes: 6
+        run: scripts/ci/hang-report.sh 120 node scripts/wasm-smoke.mjs
+        env:
+          NAPI_RS_FORCE_WASI: error
+          NODE_REPORT_DIR: ${{ runner.temp }}/node-report
+      - name: Upload hang reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-hang-report
+          path: ${{ runner.temp }}/node-report
+          if-no-files-found: ignore
       # The full suite runs with 'true' (prefer wasm, keep native when a
       # package has no wasm binding): rolldown itself is napi-rs based and
       # ships no wasm package here, so 'error' would break its loader. The
