@@ -137,18 +137,18 @@ jobs:
           # wasm fallback for platforms without a prebuilt native binding
           # (published as @medicomind/rolldown-compression-wasm32-wasi and
           # loaded by index.js when every native require fails). Plain
-          # release build — the PGO pipeline doesn't apply to wasm. wasi-sdk
-          # provides the clang toolchain for zstd-sys's C sources; napi
-          # build picks it up through WASI_SDK_PATH. The smoke test loads
+          # release build — the PGO pipeline doesn't apply to wasm. No
+          # wasi-sdk: nothing in the wasm build is C, and WASI_SDK_PATH would
+          # make napi build link wasi-sdk's wasi-libc, which with wasi-sdk-29
+          # and rustc 1.100 hangs the module at init (see ci.yml). The smoke
+          # test, bounded so a hang fails the release instead of idling, loads
           # the wasm binding under Node and runs one real compression batch,
           # exercising the threaded (rayon) path end to end.
           - host: ubuntu-latest
             target: wasm32-wasip1-threads
             build: |
-              curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
-              export WASI_SDK_PATH="$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux"
               npx napi build --platform --release --target wasm32-wasip1-threads
-              NAPI_RS_FORCE_WASI=error node scripts/wasm-smoke.mjs
+              NAPI_RS_FORCE_WASI=error timeout 300 node scripts/wasm-smoke.mjs
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4

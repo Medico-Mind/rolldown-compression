@@ -57,6 +57,9 @@ jobs:
   test-wasm:
     name: Test (wasm32-wasip1-threads fallback)
     runs-on: ubuntu-latest
+    # A wasm thread or init hang otherwise holds the runner for the 6 h
+    # default.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,17 +72,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: wasm32-wasip1-threads
-      # clang toolchain for zstd-sys's C sources; napi build picks it up
-      # through WASI_SDK_PATH.
-      - name: Install wasi-sdk
-        run: |
-          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
-          echo "WASI_SDK_PATH=$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux" >> "$GITHUB_ENV"
+      # No wasi-sdk: the wasm build compiles no C, and with WASI_SDK_PATH set
+      # napi build links wasi-sdk's wasi-libc instead of Rust's self-contained
+      # one. With wasi-sdk-29 and rustc 1.100 that module spins forever in
+      # wasi-libc's __pthread_key_delete while it initializes.
       - run: npm ci
       - run: npx napi build --platform --release --target wasm32-wasip1-threads
       # 'error' forbids the silent fallback to a native .node, proving the
-      # wasm binding itself loads and compresses.
+      # wasm binding itself loads and compresses. It takes about a second.
       - name: Smoke test wasm binding
+        timeout-minutes: 5
         run: NAPI_RS_FORCE_WASI=error node scripts/wasm-smoke.mjs
       # The full suite runs with 'true' (prefer wasm, keep native when a
       # package has no wasm binding): rolldown itself is napi-rs based and
